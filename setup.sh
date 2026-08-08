@@ -17,6 +17,10 @@ PLATFORM_BUILD_SCRIPT="build"
 PYTHON_BIN="python3"
 WHISPER_PIP_PATH=""
 WHISPER_COMMAND_PATH=""
+# Minimum Node version. Electron 43's install tooling (@electron/get 5.x and
+# @electron-internal/extract-zip) declares engines.node ">=22.12.0"; older Node
+# is not supported for a reliable Electron binary download.
+MIN_NODE_VERSION="22.12.0"
 
 print_header() {
   echo "========================================"
@@ -108,6 +112,33 @@ require_command() {
   local message="$2"
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "Error: ${message}"
+    exit 1
+  fi
+}
+
+require_node_version() {
+  local current
+  current="$(node -p 'process.versions.node' 2>/dev/null || echo '0.0.0')"
+  # `sort -V` orders versions; if MIN_NODE_VERSION is the lowest of the pair,
+  # then current >= MIN_NODE_VERSION.
+  if [[ "$(printf '%s\n%s\n' "$MIN_NODE_VERSION" "$current" | sort -V | head -n1)" != "$MIN_NODE_VERSION" ]]; then
+    echo "Error: Node.js ${MIN_NODE_VERSION}+ is required (found ${current})."
+    echo "Electron 43's install tooling (@electron/get) requires Node >= ${MIN_NODE_VERSION}."
+    echo "Install a newer Node (for example: nvm install 22) and re-run this script."
+    exit 1
+  fi
+}
+
+verify_electron_installation() {
+  echo "Verifying Electron installation"
+  # Runs scripts/verify-electron.js: checks the repo-local Electron binary can
+  # report its version, and attempts a single bounded reinstall on failure.
+  # We do this immediately after npm install/ci and BEFORE the expensive Whisper
+  # bootstrap so a broken Electron download fails fast with clear diagnostics.
+  if ! node "${SCRIPT_DIR}/scripts/verify-electron.js"; then
+    echo ""
+    echo "Stopping before Whisper setup because Electron is not usable."
+    echo "Fix the Electron installation above, then re-run ./setup.sh."
     exit 1
   fi
 }
@@ -304,8 +335,9 @@ run_app() {
 
 detect_os
 echo "Detected OS: $OS_NAME"
-require_command node "Node.js 18+ is required."
+require_command node "Node.js ${MIN_NODE_VERSION}+ is required."
 require_command npm "npm is required."
+require_node_version
 echo "Node: $(node -v)"
 echo "npm:  $(npm -v)"
 
@@ -313,6 +345,7 @@ ensure_env_file
 ensure_gemini_key
 install_system_deps
 install_node_deps
+verify_electron_installation
 setup_whisper_env
 build_app
 run_app

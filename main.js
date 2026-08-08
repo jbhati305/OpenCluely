@@ -312,9 +312,14 @@ class ApplicationController {
     // Allow HTTPS requests to Google APIs
     ses.webRequest.onBeforeSendHeaders((details, callback) => {
       if (details.url.includes('generativelanguage.googleapis.com')) {
+        // Derive the Chromium version from the running Electron at runtime so the
+        // spoofed User-Agent stays current across Electron upgrades, instead of a
+        // hard-coded Chrome/122 that drifts (Electron 43 ships a much newer
+        // Chromium). process.versions.chrome is the bundled Chromium version.
+        const chromeVersion = process.versions.chrome;
         const platformUA = process.platform === 'darwin'
-          ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.156 Safari/537.36'
-          : 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.156 Safari/537.36';
+          ? `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`
+          : `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
         details.requestHeaders['User-Agent'] = platformUA;
       }
       callback({ requestHeaders: details.requestHeaders });

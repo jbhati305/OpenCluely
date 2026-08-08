@@ -1,0 +1,92 @@
+name: CI
+
+# Pull-request checks focused on the macOS install path that issue #32 hit
+# (a real npm ci, an Electron binary verification, unit tests, and an unsigned
+# macOS build), plus basic Node 22 npm ci + unit-test coverage on Windows and
+# Ubuntu since the Electron major upgrade affects every platform. Nothing here
+# signs, notarizes, or publishes artifacts.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify-macos:
+    # Issue-specific Apple Silicon / macOS Tahoe (26) runner, matching the
+    # environment from bug report #32 (macOS 26, Node 24).
+    name: macOS verify (Node ${{ matrix.node }})
+    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is the supported floor; 24 is the version from the #32 bug report.
+        node: ['22', '24']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify Electron binary
+        run: npm run verify:electron
+
+      - name: Unit tests
+        run: npm test
+
+  test-cross-platform:
+    # The Electron 29 -> 43 upgrade touches all platforms; make sure a Node 22
+    # install and the unit tests are healthy on Windows and Ubuntu too.
+    name: ${{ matrix.os }} (Node 22)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+  build-macos:
+    name: macOS unsigned build
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify Electron binary
+        run: npm run verify:electron
+
+      - name: Build (unsigned, no publish)
+        env:
+          # Do not attempt to discover a signing identity on CI; produce an
+          # unsigned build. See release.yml for the same rationale.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run build:mac -- --publish never

@@ -7,6 +7,8 @@
     "start": "env -u ELECTRON_RUN_AS_NODE electron .",
     "dev": "env -u ELECTRON_RUN_AS_NODE electron . --no-sandbox --disable-gpu",
     "test-speech": "node scripts/test-speech.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "verify:electron": "node scripts/verify-electron.js",
     "build": "electron-builder",
     "build:mac": "electron-builder --mac",
     "build:win": "electron-builder --win",
@@ -29,6 +31,9 @@
     "url": "https://github.com/TechyCSR/OpenCluely"
   },
   "license": "ISC",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.2.0",
     "@google/genai": "^2.9.0",
@@ -42,7 +47,7 @@
     "winston-daily-rotate-file": "^4.7.1"
   },
   "devDependencies": {
-    "electron": "^29.1.0",
+    "electron": "43.3.0",
     "electron-builder": "^24.13.3"
   },
   "build": {

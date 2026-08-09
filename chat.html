@@ -20,7 +20,11 @@
 
       .chat-container {
         width: 100%;
+        max-width: 100vw;
         height: 100vh;
+        box-sizing: border-box;
+        min-width: 0;
+        overflow: hidden;
         background: linear-gradient(
           135deg,
           rgba(0, 0, 0, 0.3) 0%,
@@ -100,6 +104,8 @@
       }
       .chat-messages {
         flex: 1;
+        min-width: 0;
+        max-width: 100%;
         padding: 20px;
         overflow-y: auto;
         overflow-x: hidden;
@@ -108,13 +114,17 @@
         /* Removed max-height restriction */
       }
       .message {
+        box-sizing: border-box;
+        width: 100%;
+        min-width: 0;
+        max-width: 100%;
         margin-bottom: 16px;
         padding: 12px 16px;
         background: rgba(255, 255, 255, 0.08);
         border-radius: 8px;
         border-left: 3px solid rgba(255, 255, 255, 0.2);
         backdrop-filter: blur(5px);
-        word-wrap: break-word;
+        overflow-wrap: anywhere;
         word-break: break-word;
         /* Removed all height restrictions */
         position: relative;
@@ -170,12 +180,17 @@
       .message.assistant .message-text {
         /* Removed all height restrictions and overflow hidden */
         white-space: pre-wrap;
-        word-wrap: break-word;
+        min-width: 0;
+        max-width: 100%;
+        overflow-wrap: anywhere;
         word-break: break-word;
-        overflow-wrap: break-word;
       }
       
-      /* Ensure all content in assistant messages is fully visible */
+      /*
+       * Let blocks grow vertically, but do not force overflow to visible.
+       * That old rule overrode the <pre> scroll container and allowed long
+       * URLs, tokens and code lines to paint outside the chat window.
+       */
       .message.assistant *,
       .message.assistant .bullet-point,
       .message.assistant .numbered-point,
@@ -197,7 +212,21 @@
         /* Remove all height restrictions */
         height: auto !important;
         max-height: none !important;
-        overflow: visible !important;
+      }
+
+      /* Markdown prose must remain inside the message bubble. */
+      .message.assistant p,
+      .message.assistant li,
+      .message.assistant blockquote,
+      .message.assistant a,
+      .message.assistant strong,
+      .message.assistant em,
+      .message.assistant .bullet-point,
+      .message.assistant .numbered-point {
+        min-width: 0;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        word-break: break-word;
       }
       
       /* Markdown formatting for assistant messages */
@@ -251,6 +280,8 @@
         font-size: 11px;
         color: #64ffda;
         display: inline;
+        overflow-wrap: anywhere;
+        word-break: break-word;
       }
       
       /* Ensure code blocks are fully visible */
@@ -261,9 +292,14 @@
         font-family: 'Monaco', 'Menlo', monospace;
         font-size: 11px;
         color: #64ffda;
+        box-sizing: border-box;
+        width: 100%;
+        min-width: 0;
+        max-width: 100%;
         overflow-x: auto;
-        white-space: pre-wrap;
-        word-wrap: break-word;
+        overflow-y: hidden;
+        white-space: pre;
+        word-break: normal;
         margin: 8px 0;
         position: relative;
       }
@@ -273,6 +309,21 @@
         padding: 0;
         border-radius: 0;
         display: block;
+        max-width: none;
+        white-space: inherit;
+        overflow-wrap: normal;
+        word-break: normal;
+      }
+
+      .message.assistant img {
+        max-width: 100%;
+        height: auto;
+      }
+
+      .message.assistant table {
+        display: block;
+        max-width: 100%;
+        overflow-x: auto;
       }
 
       /* Copy button in code blocks */
@@ -396,16 +447,19 @@
         font-size: 13px;
         line-height: 1.4;
         text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-        word-wrap: break-word;
+        min-width: 0;
+        width: 100%;
+        box-sizing: border-box;
+        overflow-wrap: anywhere;
         word-break: break-word;
         white-space: pre-wrap;
-        overflow-wrap: break-word;
         max-width: 100%;
         display: block;
       }
       .message-text .math {
         font-family: 'Cambria Math', 'STIX Two Math', 'Latin Modern Math', Georgia, serif;
-        white-space: nowrap;
+        white-space: normal;
+        overflow-wrap: anywhere;
       }
       .message-text sup, .message-text sub {
         font-size: 0.72em;

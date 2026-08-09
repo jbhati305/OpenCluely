@@ -46,28 +46,37 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Quit button handler with multiple attempts
+    // Quit button: exactly one request, then the button is disabled.
+    //
+    // This previously fired BOTH window.api.send('quit-app') and
+    // window.electronAPI.quit() — which went to the same channel — and then
+    // called window.close() on a timer. The main process ran a full shutdown
+    // for each message and each scheduled its own process.exit(), so the two
+    // teardowns raced and could kill the process mid-cleanup, stranding
+    // helper processes. One click must mean one quit.
     if (quitButton) {
-        quitButton.addEventListener('click', () => {
+        let quitRequested = false;
+
+        quitButton.addEventListener('click', async () => {
+            if (quitRequested) return;
+            quitRequested = true;
+
+            quitButton.disabled = true;
+            quitButton.style.opacity = '0.6';
+            quitButton.style.cursor = 'default';
+            quitButton.innerHTML = '<i class="fas fa-power-off"></i> Quitting…';
+
             try {
-                // Try multiple ways to quit the app
-                if (window.api && window.api.send) {
-                    window.api.send('quit-app');
-                }
-                
-                // Also try the electron API if available
-                if (window.electronAPI && window.electronAPI.quit) {
-                    window.electronAPI.quit();
-                }
-                
-                // Fallback: close the window
-                setTimeout(() => {
-                    window.close();
-                }, 500);
-                
+                await window.electronAPI.quit();
             } catch (error) {
-                console.error('Error quitting app:', error);
-                window.close();
+                // The IPC channel usually just tears down as the app exits;
+                // only re-enable if the app is somehow still alive.
+                console.error('Quit request failed:', error);
+                quitRequested = false;
+                quitButton.disabled = false;
+                quitButton.style.opacity = '';
+                quitButton.style.cursor = '';
+                quitButton.innerHTML = '<i class="fas fa-power-off"></i> Quit';
             }
         });
     }
@@ -326,6 +335,229 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => {
         requestCurrentSettings();
     }, 200);
+
+    // ── macOS permissions ─────────────────────────────────────────────
+    //
+    // Status is only ever *read* here. The microphone prompt is fired solely
+    // from the Allow button (a direct user action), and Screen Recording has
+    // no request API at all — macOS raises that prompt the first time the app
+    // actually captures, which is left exactly as it was.
+
+    const permissionsSection = document.getElementById('permissionsSection');
+    const screenStatusEl = document.getElementById('screenStatus');
+    const micStatusEl = document.getElementById('micStatus');
+    const screenRestartHint = document.getElementById('screenRestartHint');
+    const screenSettingsBtn = document.getElementById('screenSettingsBtn');
+    const micAllowBtn = document.getElementById('micAllowBtn');
+    const micSettingsBtn = document.getElementById('micSettingsBtn');
+    const permRefreshBtn = document.getElementById('permRefreshBtn');
+
+    const STATUS_LABELS = {
+        'granted': 'Granted',
+        'denied': 'Denied',
+        'restricted': 'Restricted',
+        'not-determined': 'Not Set',
+        'unknown': 'Unknown'
+    };
+
+    const STATUS_CLASSES = {
+        'granted': 'is-granted',
+        'denied': 'is-denied',
+        'restricted': 'is-restricted',
+        'not-determined': 'is-pending',
+        'unknown': 'is-unknown'
+    };
+
+    const paintPill = (el, status, labelOverride) => {
+        if (!el) return;
+        el.textContent = labelOverride || STATUS_LABELS[status] || 'Unknown';
+        el.className = `status-pill ${STATUS_CLASSES[status] || 'is-unknown'}`;
+    };
+
+    const renderPermissions = (snapshot) => {
+        if (!snapshot || !snapshot.supported) {
+            if (permissionsSection) permissionsSection.style.display = 'none';
+            return;
+        }
+        if (permissionsSection) permissionsSection.style.display = '';
+
+        const screen = snapshot.screen || {};
+        const mic = snapshot.microphone || {};
+
+        paintPill(screenStatusEl, screen.status);
+        paintPill(micStatusEl, mic.status);
+
+        // Screen Recording grants are only picked up by a process that
+        // starts *after* the grant, so say so rather than letting the user
+        // wonder why capture still fails.
+        if (screenRestartHint) {
+            screenRestartHint.style.display =
+                screen.status === 'granted' ? 'none' : '';
+        }
+
+        // Once macOS has recorded a decision the prompt can never appear
+        // again — System Settings is the only remaining route.
+        if (micAllowBtn) {
+            const canPrompt = mic.status === 'not-determined';
+            micAllowBtn.style.display = canPrompt ? '' : 'none';
+            micAllowBtn.disabled = !canPrompt;
+        }
+    };
+
+    const refreshPermissions = async () => {
+        if (!window.electronAPI || !window.electronAPI.getPermissionStatus) return;
+        try {
+            renderPermissions(await window.electronAPI.getPermissionStatus());
+        } catch (error) {
+            console.error('Failed to read permission status:', error);
+            paintPill(screenStatusEl, 'unknown');
+            paintPill(micStatusEl, 'unknown');
+        }
+    };
+
+    if (permRefreshBtn) {
+        permRefreshBtn.addEventListener('click', refreshPermissions);
+    }
+
+    if (screenSettingsBtn) {
+        screenSettingsBtn.addEventListener('click', () => {
+            window.electronAPI.openPermissionSettings('screen');
+        });
+    }
+
+    if (micSettingsBtn) {
+        micSettingsBtn.addEventListener('click', () => {
+            window.electronAPI.openPermissionSettings('microphone');
+        });
+    }
+
+    if (micAllowBtn) {
+        micAllowBtn.addEventListener('click', async () => {
+            micAllowBtn.disabled = true;
+            try {
+                const result = await window.electronAPI.requestMicrophoneAccess();
+                if (result && result.needsSystemSettings) {
+                    await window.electronAPI.openPermissionSettings('microphone');
+                }
+            } catch (error) {
+                console.error('Microphone request failed:', error);
+            } finally {
+                refreshPermissions();
+            }
+        });
+    }
+
+    // ── Updates ───────────────────────────────────────────────────────
+
+    const updatesSection = document.getElementById('updatesSection');
+    const updateStatusEl = document.getElementById('updateStatus');
+    const updateDetailEl = document.getElementById('updateDetail');
+    const updateCheckBtn = document.getElementById('updateCheckBtn');
+    const updateInstallBtn = document.getElementById('updateInstallBtn');
+    const updateProgressTrack = document.getElementById('updateProgressTrack');
+    const updateProgressFill = document.getElementById('updateProgressFill');
+
+    const UPDATE_LABELS = {
+        'idle': ['Idle', 'is-pending'],
+        'checking': ['Checking', 'is-pending'],
+        'downloading': ['Downloading', 'is-pending'],
+        'downloaded': ['Ready', 'is-granted'],
+        'not-available': ['Up to date', 'is-granted'],
+        'error': ['Error', 'is-error']
+    };
+
+    const renderUpdateState = (state) => {
+        if (!state) return;
+
+        const [label, cls] = UPDATE_LABELS[state.state] || ['Unknown', 'is-unknown'];
+        if (updateStatusEl) {
+            updateStatusEl.textContent = label;
+            updateStatusEl.className = `status-pill ${cls}`;
+        }
+
+        if (updateDetailEl) {
+            const current = state.currentVersion ? `Version ${state.currentVersion}` : 'Version unknown';
+            let detail;
+
+            if (!state.enabled) {
+                detail = `${current} — updates are only available in the installed macOS app`;
+            } else if (state.state === 'error') {
+                detail = state.error || 'Update check failed';
+            } else if (state.state === 'downloaded') {
+                detail = `${current} — ${state.availableVersion} is ready to install`;
+            } else if (state.state === 'downloading') {
+                detail = `${current} — downloading ${state.availableVersion} (${state.percent}%)`;
+            } else if (state.state === 'not-available') {
+                detail = `${current} — you're on the latest version`;
+            } else if (state.lastCheckAt) {
+                const when = new Date(state.lastCheckAt);
+                detail = `${current} — last checked ${when.toLocaleTimeString()}`;
+            } else {
+                detail = current;
+            }
+            updateDetailEl.textContent = detail;
+        }
+
+        const downloading = state.state === 'downloading';
+        if (updateProgressTrack) updateProgressTrack.style.display = downloading ? '' : 'none';
+        if (updateProgressFill) updateProgressFill.style.width = `${state.percent || 0}%`;
+
+        if (updateInstallBtn) {
+            updateInstallBtn.style.display = state.canInstall ? '' : 'none';
+        }
+        if (updateCheckBtn) {
+            updateCheckBtn.disabled = !state.enabled || state.state === 'checking' || downloading;
+        }
+    };
+
+    const refreshUpdateState = async () => {
+        if (!window.electronAPI || !window.electronAPI.getUpdateState) {
+            if (updatesSection) updatesSection.style.display = 'none';
+            return;
+        }
+        try {
+            renderUpdateState(await window.electronAPI.getUpdateState());
+        } catch (error) {
+            console.error('Failed to read update state:', error);
+        }
+    };
+
+    if (updateCheckBtn) {
+        updateCheckBtn.addEventListener('click', async () => {
+            updateCheckBtn.disabled = true;
+            try {
+                renderUpdateState(await window.electronAPI.checkForUpdates());
+            } catch (error) {
+                console.error('Update check failed:', error);
+            } finally {
+                refreshUpdateState();
+            }
+        });
+    }
+
+    if (updateInstallBtn) {
+        updateInstallBtn.addEventListener('click', async () => {
+            updateInstallBtn.disabled = true;
+            try {
+                const result = await window.electronAPI.installUpdate();
+                if (result && !result.success) {
+                    console.error('Install refused:', result.error);
+                    updateInstallBtn.disabled = false;
+                }
+            } catch (error) {
+                console.error('Install failed:', error);
+                updateInstallBtn.disabled = false;
+            }
+        });
+    }
+
+    // Live progress pushed from the main process.
+    if (window.electronAPI && window.electronAPI.onUpdateState) {
+        window.electronAPI.onUpdateState(renderUpdateState);
+    }
+
+    refreshPermissions();
+    refreshUpdateState();
 
     // ESC key to close
     document.addEventListener('keydown', (e) => {

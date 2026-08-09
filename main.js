@@ -1,7 +1,17 @@
 const path = require("path");
 const fs = require("fs");
 const { fileURLToPath } = require("url");
-const { app, BrowserWindow, globalShortcut, session, ipcMain } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  globalShortcut,
+  session,
+  ipcMain,
+  Menu,
+  dialog,
+  shell,
+  systemPreferences,
+} = require("electron");
 
 // ── Resolve a stable .env location ──
 // In packaged builds process.cwd() is unstable and frequently read-only
@@ -109,6 +119,18 @@ const { createScreenshotOcrRunner } = require("./src/controllers/screenshot-ocr"
 const windowManager = require("./src/managers/window.manager");
 const sessionManager = require("./src/managers/session.manager");
 
+// Application lifecycle, identity, permissions and updates
+const { AppLifecycle } = require("./src/core/app-lifecycle");
+const { installMacMenu } = require("./src/core/mac-menu");
+const {
+  PRODUCT_NAME,
+  isStealthEnabled,
+  resolveIdentity,
+  applyIdentity,
+} = require("./src/core/app-identity");
+const { MacPermissionsService } = require("./src/services/mac-permissions.service");
+const { UpdaterService } = require("./src/services/updater.service");
+
 class ApplicationController {
   constructor() {
     this.isReady = false;
@@ -152,27 +174,104 @@ class ApplicationController {
       settings: { title: "Settings" },
     };
 
-    this.setupStealth();
+    // Single source of truth for shutdown. Every quit path — Settings,
+    // application menu, Cmd+Q, window-all-closed, updater — routes through
+    // this, so cleanup happens exactly once.
+    this.lifecycle = new AppLifecycle({
+      app,
+      globalShortcut,
+      windowManager,
+      speechService,
+      sessionManager,
+      logger,
+      platform: process.platform,
+    });
+
+    this.permissions = new MacPermissionsService({
+      systemPreferences,
+      shell,
+      platform: process.platform,
+      logger,
+    });
+
+    this.updater = this.createUpdaterService();
+
+    this.setupIdentity();
     this.setupEventHandlers();
   }
 
-  setupStealth() {
-    if (config.get("stealth.disguiseProcess")) {
-      process.title = config.get("app.processTitle");
+  /**
+   * electron-updater is only loaded for a packaged macOS build. Requiring it
+   * lazily keeps development runs from touching the update machinery at all.
+   */
+  createUpdaterService() {
+    let autoUpdater = null;
+
+    if (process.platform === "darwin" && app.isPackaged) {
+      try {
+        ({ autoUpdater } = require("electron-updater"));
+      } catch (error) {
+        logger.warn("electron-updater unavailable; updates disabled", {
+          error: error.message,
+        });
+      }
     }
 
-    // Set default stealth app name early
-    if (app && typeof app.setName === 'function') {
-      app.setName("Terminal ");
-    }
-    process.title = "Terminal ";
+    return new UpdaterService({
+      app,
+      autoUpdater,
+      dialog,
+      lifecycle: this.lifecycle,
+      logger,
+      platform: process.platform,
+      onStateChange: (state) => {
+        try {
+          windowManager.broadcastToAllWindows("updates:state", state);
+        } catch (_) {
+          /* windows may not exist yet */
+        }
+      },
+    });
+  }
+
+  /**
+   * Apply the app's presentation identity.
+   *
+   * Historically this force-renamed the app to "Terminal " on every platform,
+   * at construction and again on ready. In a packaged macOS build that moves
+   * `userData` (the app name is part of its path), breaks electron-updater's
+   * notion of which app is installed, and desynchronises the running name
+   * from the signed bundle. Identity is now always the real product name;
+   * only cosmetic surfaces are disguised, and only when the user opts in.
+   */
+  setupIdentity() {
+    this.stealthEnabled = isStealthEnabled({ env: process.env });
+
+    this.identity = resolveIdentity({
+      platform: process.platform,
+      isPackaged: app.isPackaged,
+      stealthEnabled: this.stealthEnabled,
+      preset: this.appIcon || "terminal",
+    });
+
+    applyIdentity({
+      identity: this.identity,
+      app,
+      processRef: process,
+      logger,
+    });
 
     if (
       process.platform === "darwin" &&
       config.get("stealth.noAttachConsole")
     ) {
       process.env.ELECTRON_NO_ATTACH_CONSOLE = "1";
-      process.env.ELECTRON_NO_ASAR = "1";
+      // NOTE: ELECTRON_NO_ASAR is deliberately NOT set for packaged builds.
+      // Disabling asar in a signed bundle breaks the sealed-resource check
+      // that `codesign --verify --deep --strict` performs.
+      if (!app.isPackaged) {
+        process.env.ELECTRON_NO_ASAR = "1";
+      }
     }
   }
 
@@ -180,6 +279,26 @@ class ApplicationController {
     app.whenReady().then(() => this.onAppReady());
     app.on("window-all-closed", () => this.onWindowAllClosed());
     app.on("activate", () => this.onActivate());
+    // Cleanup MUST run here, not on will-quit.
+    //
+    // The main, chat and llmResponse windows are created with
+    // `closable: false` (see window.manager.js) so the OS red button and
+    // Cmd+W cannot destroy the overlay. A non-closable BrowserWindow also
+    // ignores the close() that Electron issues between 'before-quit' and
+    // 'will-quit' — so the quit sequence stalls there and 'will-quit' NEVER
+    // fires. That is the real reason the old code needed a process.exit(0)
+    // timer after app.quit(): it was force-killing a wedged shutdown.
+    //
+    // Cleanup calls windowManager.destroyAllWindows(), which uses destroy()
+    // and therefore bypasses `closable: false`. Running it on 'before-quit'
+    // removes the windows that would otherwise block the quit, letting
+    // Electron exit on its own without a forced process exit.
+    app.on("before-quit", () => {
+      this.lifecycle.noteExternalQuit("before-quit");
+      this.lifecycle.runCleanup("before-quit");
+    });
+    // Safety net for any path that reaches will-quit without before-quit.
+    // runCleanup() is idempotent, so this is a no-op in the normal case.
     app.on("will-quit", () => this.onWillQuit());
 
     this.setupIPCHandlers();
@@ -226,9 +345,9 @@ class ApplicationController {
     }
     this.starting = true;
 
-    // Force stealth mode IMMEDIATELY when app is ready
-    app.setName("Terminal ");
-    process.title = "Terminal ";
+    // Presentation only — never app.setName() on a packaged build, which
+    // would relocate userData and desynchronise the updater and signature.
+    applyIdentity({ identity: this.identity, processRef: process, logger });
 
     logger.info("Application starting", {
       version: config.get("app.version"),
@@ -263,12 +382,23 @@ class ApplicationController {
 
       await windowManager.initializeWindows({ showMainWindow: !isFirstRun });
       this.setupGlobalShortcuts();
+      this.setupWindowCloseBehavior();
+      this.setupApplicationMenu();
 
-      // Initialize default stealth mode with terminal icon
-      this.updateAppIcon("terminal");
+      // Only apply the disguised icon/name when stealth is explicitly on.
+      // A packaged build otherwise keeps the real OpenCluely presentation.
+      if (this.stealthEnabled) {
+        this.updateAppIcon("terminal");
+      }
 
       this.starting = false;
       this.isReady = true;
+
+      // Updates: packaged macOS only. initialize() is a no-op otherwise, so
+      // a source run never contacts the update server.
+      if (this.updater.initialize()) {
+        this.updater.scheduleStartupCheck();
+      }
 
       // Launch the onboarding wizard if this is the first run.
       if (this.isFirstRun) {
@@ -303,7 +433,7 @@ class ApplicationController {
       logger.error("Application initialization failed", {
         error: error.message,
       });
-      app.quit();
+      this.lifecycle.requestQuit("initialization-failed");
     }
   }
 
@@ -928,29 +1058,12 @@ class ApplicationController {
       return { success: true, contentMetrics };
     });
 
-    ipcMain.handle("quit-app", () => {
-      logger.info("Quit app requested via IPC");
-      try {
-        // Force quit the application
-        const { app } = require("electron");
-
-        // Close all windows first
-        windowManager.destroyAllWindows();
-
-        // Unregister shortcuts
-        globalShortcut.unregisterAll();
-
-        // Force quit
-        app.quit();
-
-        // If the above doesn't work, force exit
-        setTimeout(() => {
-          process.exit(0);
-        }, 2000);
-      } catch (error) {
-        logger.error("Error during quit:", error);
-        process.exit(1);
-      }
+    // Single quit entry point. Replaces the former pair of handlers
+    // (ipcMain.handle("quit-app") + ipcMain.on("quit-app")) which each ran a
+    // full cleanup and scheduled a racing process.exit().
+    ipcMain.handle("app:quit", () => {
+      const outcome = this.lifecycle.requestQuit("ipc:app:quit");
+      return { success: true, ...outcome };
     });
 
     // Handle close settings
@@ -972,20 +1085,26 @@ class ApplicationController {
       windowManager.broadcastToAllWindows("skill-updated", { skill });
     });
 
-    // Handle quit app (alternative method)
-    ipcMain.on("quit-app", () => {
-      logger.info("Quit app requested via IPC (on method)");
-      try {
-        const { app } = require("electron");
-        windowManager.destroyAllWindows();
-        globalShortcut.unregisterAll();
-        app.quit();
-        setTimeout(() => process.exit(0), 1000);
-      } catch (error) {
-        logger.error("Error during quit (on method):", error);
-        process.exit(1);
-      }
+    // ── macOS permissions ──
+    ipcMain.handle("permissions:get-status", () => this.permissions.getAllStatuses());
+
+    ipcMain.handle("permissions:request-microphone", async () => {
+      // Only ever reached from a direct click in Settings.
+      return this.permissions.requestMicrophoneAccess();
     });
+
+    ipcMain.handle("permissions:open-settings", async (event, permission) => {
+      return this.permissions.openSystemSettings(permission);
+    });
+
+    // ── Updates ──
+    ipcMain.handle("updates:get-state", () => this.updater.getState());
+
+    ipcMain.handle("updates:check", async () => {
+      return this.updater.checkForUpdates({ manual: true });
+    });
+
+    ipcMain.handle("updates:install", () => this.updater.installUpdate());
   }
 
   toggleSpeechRecognition() {
@@ -1576,43 +1695,113 @@ class ApplicationController {
     this.sendToVoiceResponseWindows("transcription-llm-response", data);
   }
 
-  onWindowAllClosed() {
-    if (process.platform !== "darwin") {
-      app.quit();
-    }
-  }
+  /**
+   * On macOS the red traffic-light button hides a window rather than
+   * destroying it, matching the platform convention and keeping the app
+   * available from the dock. Non-macOS behaviour is untouched.
+   */
+  setupWindowCloseBehavior() {
+    if (process.platform !== "darwin") return;
 
-  onActivate() {
-    if (!this.isReady && !this.starting) {
-      this.onAppReady();
-    } else if (this.isReady) {
-      // When app is activated, ensure windows appear on current desktop
-      const mainWindow = windowManager.getWindow("main");
-      if (mainWindow && mainWindow.isVisible()) {
-        windowManager.showOnCurrentDesktop(mainWindow);
-      }
+    windowManager.windows.forEach((window, type) => {
+      if (!window || window.isDestroyed()) return;
+      if (window.__ocCloseBound) return;
+      window.__ocCloseBound = true;
 
-      // Also handle other visible windows
-      windowManager.windows.forEach((window, type) => {
-        if (window.isVisible()) {
-          windowManager.showOnCurrentDesktop(window);
+      window.on("close", (event) => {
+        if (this.lifecycle.handleWindowCloseRequest(window, type)) {
+          event.preventDefault();
         }
       });
 
-      logger.debug("App activated - ensured windows appear on current desktop");
+      // Belt and braces: if a window is destroyed anyway, make sure the
+      // manager never hands the dead handle out again.
+      window.on("closed", () => {
+        try {
+          windowManager.windows.delete(type);
+        } catch (_) {
+          /* already gone */
+        }
+      });
+    });
+  }
+
+  setupApplicationMenu() {
+    const installed = installMacMenu({
+      Menu,
+      platform: process.platform,
+      options: {
+        appName: PRODUCT_NAME,
+        onQuit: () => this.lifecycle.requestQuit("menu:quit"),
+        onCheckForUpdates: () => {
+          this.updater.checkForUpdates({ manual: true }).catch((error) =>
+            logger.warn("Manual update check failed", { error: error.message })
+          );
+        },
+      },
+    });
+
+    if (installed) logger.info("Installed macOS application menu");
+  }
+
+  onWindowAllClosed() {
+    // macOS keeps the app resident; other platforms quit via the lifecycle
+    // controller so cleanup still runs exactly once.
+    this.lifecycle.handleWindowAllClosed();
+  }
+
+  onActivate() {
+    if (this.lifecycle.isShuttingDown) {
+      logger.debug("Activate ignored during shutdown", {
+        state: this.lifecycle.state,
+      });
+      return;
     }
+
+    if (!this.isReady && !this.starting) {
+      this.onAppReady();
+      return;
+    }
+    if (!this.isReady) return;
+
+    this.lifecycle.handleActivate({
+      // No usable main window left (e.g. it was destroyed). Rebuild rather
+      // than calling BrowserWindow methods on a dead handle.
+      recreate: () => {
+        windowManager
+          .initializeWindows({ showMainWindow: true })
+          .then(() => windowManager.showAllWindows())
+          .catch((error) =>
+            logger.error("Failed to recreate windows on activate", {
+              error: error.message,
+            })
+          );
+      },
+      restore: (mainWindow) => {
+        if (typeof mainWindow.isMinimized === "function" && mainWindow.isMinimized()) {
+          mainWindow.restore();
+        }
+        if (!mainWindow.isVisible()) {
+          windowManager.showAllWindows();
+        }
+        windowManager.showOnCurrentDesktop(mainWindow);
+
+        // Only touch windows that are still alive.
+        windowManager.windows.forEach((window) => {
+          if (window && !window.isDestroyed() && window.isVisible()) {
+            windowManager.showOnCurrentDesktop(window);
+          }
+        });
+
+        logger.debug("App activated - restored windows on current desktop");
+      },
+    });
   }
 
   onWillQuit() {
-    globalShortcut.unregisterAll();
-    speechService.shutdown();
-    windowManager.destroyAllWindows();
-
-    const sessionStats = sessionManager.getMemoryUsage();
-    logger.info("Application shutting down", {
-      sessionEvents: sessionStats.eventCount,
-      sessionSize: sessionStats.approximateSize,
-    });
+    // Idempotent: safe whether we got here from requestQuit(), an OS-driven
+    // quit, or an updater install that already ran cleanup.
+    this.lifecycle.runCleanup("will-quit");
   }
 
   getWhisperInstaller() {
@@ -1958,69 +2147,54 @@ class ApplicationController {
     }
   }
 
+  /**
+   * Update the app's *presentation* for the selected stealth preset.
+   *
+   * This used to call `app.setName()` on macOS (repeatedly, on a timer). That
+   * is what made the packaged app unstable: the app name feeds
+   * `app.getPath('userData')`, electron-updater's installed-app identity and
+   * the signed bundle's name. Renaming a running packaged app therefore split
+   * the user's config directory and broke update staging.
+   *
+   * Now only cosmetic surfaces change — process title, window titles, dock
+   * icon — and the bundle identity is left alone entirely.
+   */
   updateAppName(appName, iconKey) {
     try {
-      const { app } = require("electron");
+      this.identity = resolveIdentity({
+        platform: process.platform,
+        isPackaged: app.isPackaged,
+        stealthEnabled: this.stealthEnabled,
+        preset: iconKey,
+      });
 
-      // Force update process title for Activity Monitor stealth - CRITICAL
-      process.title = appName;
+      applyIdentity({
+        identity: this.identity,
+        app,
+        processRef: process,
+        windows: windowManager.windows.values(),
+        logger,
+      });
 
-      // Set app name in dock (macOS) - this affects the dock and Activity Monitor
-      if (process.platform === "darwin") {
-        // Multiple attempts to ensure the name sticks
-        app.setName(appName);
-
-        // Clear dock badge and reset
-        if (app.dock) {
-          app.dock.setBadge("");
-          // Force dock refresh
-          setTimeout(() => {
-            app.dock.setIcon(
-              require("path").resolve(__dirname, `assests/icons/${iconKey}.png`)
-            );
-          }, 50);
-        }
+      if (process.platform === "darwin" && app.dock) {
+        app.dock.setBadge("");
       }
 
-      // Set app user model ID for Windows taskbar grouping (Windows only)
+      // Windows taskbar grouping — unchanged behaviour.
       if (process.platform === "win32") {
-        app.setAppUserModelId(`${appName.trim()}-${iconKey}`);
+        app.setAppUserModelId(`${String(appName || "").trim()}-${iconKey}`);
       }
 
-      // Update all window titles to match the new app name
-      const windows = windowManager.windows;
-      windows.forEach((window, type) => {
-        if (window && !window.isDestroyed()) {
-          // Use stealth name for all windows
-          const stealthTitle = appName.trim();
-          window.setTitle(stealthTitle);
-        }
-      });
-
-      // Multiple force refreshes with increasing delays
-      const refreshTimes = [50, 100, 200, 500];
-      refreshTimes.forEach((delay) => {
-        setTimeout(() => {
-          process.title = appName;
-          if (process.platform === "darwin") {
-            app.setName(appName);
-            // Force update bundle display name
-            if (app.getName() !== appName) {
-              app.setName(appName);
-            }
-          }
-        }, delay);
-      });
-
-      logger.info("App name updated for stealth mode", {
-        appName,
-        processTitle: process.title,
-        appGetName: app.getName(),
+      logger.info("App presentation updated", {
+        processTitle: this.identity.processTitle,
+        windowTitle: this.identity.windowTitle,
+        stealth: this.identity.stealth,
+        bundleName: app.getName(),
         iconKey,
         platform: process.platform,
       });
     } catch (error) {
-      logger.error("Failed to update app name", { error: error.message });
+      logger.error("Failed to update app presentation", { error: error.message });
     }
   }
 }

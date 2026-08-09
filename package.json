@@ -10,10 +10,14 @@
     "test": "node --test \"test/**/*.test.js\"",
     "verify:electron": "node scripts/verify-electron.js",
     "build": "electron-builder",
-    "build:mac": "electron-builder --mac",
+    "build:mac": "node scripts/build-mac.js",
+    "build:mac:arm64": "node scripts/build-mac.js",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux",
     "build:all": "electron-builder --mac --win --linux",
+    "mac:signing:check": "node scripts/mac-signing-check.js",
+    "verify:mac-signature": "node scripts/verify-mac-signature.js",
+    "release:mac": "node scripts/release-mac.js",
     "dist": "npm run build",
     "pack": "electron-builder --dir",
     "clean": "rm -rf dist/",
@@ -38,6 +42,7 @@
     "@fortawesome/fontawesome-free": "^7.2.0",
     "@google/genai": "^2.9.0",
     "dotenv": "^16.3.1",
+    "electron-updater": "^6.3.9",
     "markdown": "^0.5.0",
     "marked": "^15.0.12",
     "microsoft-cognitiveservices-speech-sdk": "^1.40.0",
@@ -59,6 +64,9 @@
     "files": [
       "**/*",
       "!dist/**/*",
+      "!build/**/*",
+      "!docs/**/*",
+      "!test/**/*",
       "!*.md",
       "!.git/**/*",
       "!.env*",
@@ -76,25 +84,27 @@
     ],
     "mac": {
       "category": "public.app-category.utilities",
+      "executableName": "OpenCluely",
       "target": [
         {
           "target": "dmg",
           "arch": [
-            "x64",
             "arm64"
           ]
         },
         {
           "target": "zip",
           "arch": [
-            "x64",
             "arm64"
           ]
         }
       ],
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
       "darkModeSupport": true,
-      "hardenedRuntime": false,
+      "hardenedRuntime": true,
       "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "extendInfo": {
         "NSMicrophoneUsageDescription": "OpenCluely uses the microphone to transcribe your speech locally with Whisper.",
         "NSCameraUsageDescription": "OpenCluely does not record video; this entitlement is only present for media-capture compatibility.",

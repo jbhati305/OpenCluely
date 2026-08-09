@@ -6,8 +6,13 @@ class PromptLoader {
     this.prompts = new Map();
     this.promptsLoaded = false;
     this.skillPromptSent = new Set();
-    // Supported skills: DSA, OS, Networking, System Design, LLD
-    this.supportedSkills = ['dsa', 'os', 'networking', 'system-design', 'lld'];
+    // Supported skills: DSA, OS, Networking, System Design, LLD, General.
+    // `general` is the catch-all for questions that do not belong to a
+    // specialised track, so the assistant still has a prompt to work from
+    // instead of falling back to whichever skill happened to be selected.
+    this.supportedSkills = ['dsa', 'os', 'networking', 'system-design', 'lld', 'general'];
+    // `general` is deliberately excluded: it is not a coding track, so the
+    // answer should not be forced into one programming language.
     this.skillsRequiringProgrammingLanguage = ['dsa', 'lld'];
   }
 
@@ -375,7 +380,13 @@ STRICT REQUIREMENTS:
       'lld': 'lld',
       'low-level-design': 'lld',
       'object-oriented-design': 'lld',
-      'ood': 'lld'
+      'ood': 'lld',
+      'general': 'general',
+      'general-questions': 'general',
+      'generic': 'general',
+      'misc': 'general',
+      'other': 'general',
+      'qa': 'general'
     };
 
     return skillMap[normalized] || normalized;

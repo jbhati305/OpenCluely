@@ -1333,6 +1333,7 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
       'system-design': 'For this system design question, consider scalability, reliability, and the trade-offs between different architectural approaches.',
       'lld': 'This looks like a low-level design question. Consider the core entities, their relationships, and which design patterns fit best.',
       'programming': 'This looks like a programming challenge. Focus on understanding the requirements, edge cases, and optimal time/space complexity.',
+      'general': 'I can help with this. Try narrowing it to the specific thing you want to know, and check that your Gemini API key is configured for a detailed answer.',
       'default': 'I can help analyze this content. Please ensure your Gemini API key is properly configured for detailed analysis.'
     };
 
@@ -1371,13 +1372,20 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
     const textLower = text.toLowerCase();
     const relevantKeywords = skillKeywords[activeSkill] || [];
     const hasRelevantKeywords = relevantKeywords.some(keyword => textLower.includes(keyword));
-    
+
     // Check for question indicators
     const questionIndicators = ['how', 'what', 'why', 'when', 'where', 'can you', 'could you', 'should i', '?'];
     const seemsLikeQuestion = questionIndicators.some(indicator => textLower.includes(indicator));
 
     let response;
-    if (hasRelevantKeywords || seemsLikeQuestion) {
+    if (activeSkill === 'general') {
+      // The catch-all track has no keyword list because every topic is in
+      // scope, so phrasing it as "relevant to general" would read as a
+      // nonsense constraint.
+      response = seemsLikeQuestion
+        ? "I'm having trouble processing that right now. Could you rephrase it or be a bit more specific?"
+        : "Yeah, I'm listening. Go ahead and ask your question.";
+    } else if (hasRelevantKeywords || seemsLikeQuestion) {
       response = `I'm having trouble processing that right now, but it sounds like a ${activeSkill} question. Could you rephrase or ask more specifically about what you need help with?`;
     } else {
       response = `Yeah, I'm listening. Ask your question relevant to ${activeSkill}.`;

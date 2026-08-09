@@ -29,7 +29,8 @@ class MainWindowUI {
             'os',
             'networking',
             'system-design',
-            'lld'
+            'lld',
+            'general'
         ];
         
         this.init();
@@ -536,7 +537,8 @@ class MainWindowUI {
             'programming': 'Programming',
             'devops': 'DevOps',
             'system-design': 'System Design',
-            'negotiation': 'Negotiation'
+            'negotiation': 'Negotiation',
+            'general': 'General'
         };
         
         const displaySkill = skillNames[skill] || skill.toUpperCase();
@@ -778,7 +780,8 @@ class MainWindowUI {
             'programming': 'Programming',
             'devops': 'DevOps',
             'system-design': 'System Design',
-            'negotiation': 'Negotiation'
+            'negotiation': 'Negotiation',
+            'general': 'General'
         };
         
         logger.info('Updating skill indicator', {
@@ -894,7 +897,8 @@ class MainWindowUI {
             'programming': 'Programming',
             'devops': 'DevOps',
             'system-design': 'System Design',
-            'negotiation': 'Negotiation'
+            'negotiation': 'Negotiation',
+            'general': 'General'
         };
         
         const displayName = skillNames[skill] || skill.toUpperCase();

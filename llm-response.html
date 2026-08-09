@@ -58,10 +58,18 @@
             overflow-x: auto;
             border: 1px solid rgba(255, 255, 255, 0.1);
         }
-        .markdown-content pre code { 
-            background-color: transparent; 
-            padding: 0; 
+        .markdown-content pre code {
+            background-color: transparent;
+            padding: 0;
             color: #e5e7eb;
+        }
+        /* Soft-wrap code in the single-column layout so long lines (e.g. C++)
+           wrap instead of forcing left/right scrolling. */
+        .full-content-inner pre,
+        .full-content-inner pre code {
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         .markdown-content blockquote {
             border-left: 4px solid #6b7280;
@@ -662,18 +670,15 @@
             
             // Check if response contains code blocks
             const codeBlocks = extractCodeBlocks(response);
-            hasCode = codeBlocks.length > 0;
-
             // Calculate content metrics for dynamic sizing
             const contentMetrics = calculateContentMetrics(response, codeBlocks);
 
-            if (hasCode) {
-                // Split layout: text on left, code on right
-                displaySplitLayout(response, codeBlocks);
-            } else {
-                // Full layout: all content in one panel
-                displayFullLayout(response);
-            }
+            // Always render in a single, vertically-stacked column: the explanation
+            // with code blocks inline beneath it. The old side-by-side split layout
+            // forced horizontal scrolling to read code, so it is no longer used.
+            hasCode = false;
+            currentLayout = 'full';
+            displayFullLayout(response);
             
             // Request dynamic window sizing based on content
             setTimeout(() => {
@@ -876,30 +881,71 @@
             document.getElementById('split-layout').classList.add('hidden');
             document.getElementById('full-content').classList.remove('hidden');
 
-            // Render full markdown
-            const html = renderMarkdown(response);
             const full = document.getElementById('full-markdown');
-            full.innerHTML = html;
-            if (window.renderMathInElement) window.renderMathInElement(full);
+            full.innerHTML = '';
 
-            // Highlight any code if Prism is available
-            if (typeof Prism !== 'undefined') {
-                Prism.highlightAll();
-            }
+            // Render the response as ordered segments in a single column: prose
+            // through the markdown parser, fenced code VERBATIM. We deliberately
+            // do NOT feed code through marked — imperfect fences from the model
+            // (e.g. a stray blank line or a language on the closing fence) make it
+            // mis-parse code as markdown, turning '#include' into a heading and
+            // splitting the block. Extracting code first keeps it intact.
+            const regex = /(```|~~~)([^\n]*)\n([\s\S]*?)\1/g;
+            let lastIndex = 0;
+            let match;
 
-            // Add copy buttons to code blocks in full view
-            const pres = full.querySelectorAll('pre');
-            pres.forEach(pre => {
-                if (pre.querySelector('.copy-btn')) return;
-                const code = pre.querySelector('code');
-                const text = code ? code.textContent : pre.textContent;
+            const appendText = (text) => {
+                const trimmed = (text || '').replace(/^\s+|\s+$/g, '');
+                if (!trimmed) return;
+                const div = document.createElement('div');
+                div.className = 'markdown-content';
+                div.innerHTML = renderMarkdown(trimmed);
+                if (window.renderMathInElement) window.renderMathInElement(div);
+                full.appendChild(div);
+            };
+
+            const appendCode = (language, code) => {
+                const lang = ((language || 'text').trim().split(/\s+/)[0]) || 'text';
+                const block = document.createElement('div');
+                block.className = 'code-block';
+
+                const header = document.createElement('div');
+                header.className = 'code-header';
+                header.textContent = lang.toUpperCase();
+
+                const content = document.createElement('div');
+                content.className = 'code-content';
+
+                const pre = document.createElement('pre');
+                pre.style.position = 'relative';
+                const codeEl = document.createElement('code');
+                codeEl.className = 'language-' + lang;
+                codeEl.textContent = code; // verbatim; never markdown-parsed
+                pre.appendChild(codeEl);
+
                 const btn = document.createElement('button');
                 btn.className = 'copy-btn';
                 btn.textContent = 'Copy';
-                attachCopy(btn, text || '');
-                pre.style.position = 'relative';
+                attachCopy(btn, code || '');
                 pre.appendChild(btn);
-            });
+
+                content.appendChild(pre);
+                block.appendChild(header);
+                block.appendChild(content);
+                full.appendChild(block);
+            };
+
+            while ((match = regex.exec(response)) !== null) {
+                appendText(response.slice(lastIndex, match.index));
+                appendCode(match[2], match[3]);
+                lastIndex = regex.lastIndex;
+            }
+            appendText(response.slice(lastIndex));
+
+            // Highlight code (Prism preserves the verbatim text content).
+            if (typeof Prism !== 'undefined') {
+                Prism.highlightAll();
+            }
         }
 
         function escapeHtml(text) {

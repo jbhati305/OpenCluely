@@ -9,6 +9,9 @@ class WindowManager {
     this.activeWindow = 'main';
     this.isInteractive = true; // default to interactive so windows are clickable/drag-able
     this.isVisible = false;
+    // Snapshot of window types that were visible at the last hide, so the global
+    // visibility toggle restores exactly them instead of force-opening everything.
+    this.lastVisibleWindows = [];
     this.currentDisplay = null;
     this.screenWatcher = null;
     this.desktopWatcher = null;
@@ -932,7 +935,10 @@ class WindowManager {
 
   handleScreenSharingStarted() {
     logger.info('Screen sharing mode enabled - hiding windows');
-    
+
+    // Remember what was visible so it can be restored when sharing stops.
+    this.captureVisibleWindowState();
+
     this.windows.forEach((window, type) => {
       if (!window.isDestroyed()) {
         window.hide();
@@ -978,38 +984,65 @@ class WindowManager {
     }
   }
 
+  // Record which windows are currently visible so a later restore can bring back
+  // exactly those, preserving user state across a hide/show toggle.
+  captureVisibleWindowState() {
+    const visible = [];
+    this.windows.forEach((window, type) => {
+      if (!window.isDestroyed() && window.isVisible()) {
+        visible.push(type);
+      }
+    });
+    this.lastVisibleWindows = visible;
+    return visible;
+  }
+
   showAllWindows() {
     if (this.isScreenBeingShared) {
       return;
     }
 
+    // Restore only the windows that were visible when we last hid, so the toggle
+    // maintains state instead of force-opening every window. This also keeps the
+    // AI response window from popping up empty: it is only restored if it was
+    // actually visible (i.e. had content) at hide time. Fall back to the main
+    // window when we have no snapshot (first show, or external callers).
+    let toShow = Array.isArray(this.lastVisibleWindows) ? this.lastVisibleWindows : [];
+    if (toShow.length === 0) {
+      toShow = [this.activeWindow || 'main'];
+    }
+
     this.windows.forEach((window, type) => {
-      if (type !== 'llmResponse') { // Don't show LLM response unless it has content
+      if (toShow.includes(type) && !window.isDestroyed()) {
         this.showOnCurrentDesktop(window);
       }
     });
-    
+
     this.isVisible = true;
     const activeWindow = this.windows.get(this.activeWindow);
-    if (activeWindow) {
+    if (activeWindow && toShow.includes(this.activeWindow)) {
       activeWindow.focus();
     }
-    
-    logger.info('All windows shown on current desktop', { 
-      activeWindow: this.activeWindow,
-      windowCount: this.windows.size 
+
+    logger.info('Windows restored on current desktop', {
+      restored: toShow,
+      windowCount: this.windows.size
     });
   }
 
   hideAllWindows() {
-    this.windows.forEach((window, type) => {
-      if (type !== 'llmResponse') {
+    // Snapshot the currently-visible windows, then hide EVERYTHING (including the
+    // AI response window) so the global toggle truly hides all on-screen windows.
+    this.captureVisibleWindowState();
+
+    this.windows.forEach((window) => {
+      if (!window.isDestroyed()) {
         window.hide();
       }
     });
-    
+
     this.isVisible = false;
-    logger.info('All windows hidden');
+    logger.info('All windows hidden', { hidden: this.lastVisibleWindows });
   }
 
   toggleVisibility() {
@@ -1256,6 +1289,31 @@ class WindowManager {
     if (llmWindow) {
       llmWindow.hide();
     }
+  }
+
+  // Toggle just the AI response window, independent of the global visibility
+  // toggle. Lets you show/hide the AI response on its own while preserving its
+  // last content.
+  toggleLLMResponse() {
+    const llmWindow = this.windows.get('llmResponse');
+    if (!llmWindow || llmWindow.isDestroyed()) {
+      return false;
+    }
+
+    if (llmWindow.isVisible()) {
+      llmWindow.hide();
+      return false;
+    }
+
+    if (this.isScreenBeingShared) {
+      return false;
+    }
+
+    this.showOnCurrentDesktop(llmWindow);
+    if (this.bindWindows) {
+      this.positionBoundWindows();
+    }
+    return true;
   }
 
   showSettings() {

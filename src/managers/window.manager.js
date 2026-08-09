@@ -2,10 +2,17 @@ const { BrowserWindow, screen, shell } = require('electron');
 const path = require('path');
 const logger = require('../core/logger').createServiceLogger('WINDOW');
 const config = require('../core/config');
+const { CursorPolicy } = require('../core/cursor-policy');
 
 class WindowManager {
   constructor() {
     this.windows = new Map();
+
+    // Cursor-shape privacy. Independent of interaction/click-through mode:
+    // this only changes how the pointer LOOKS, while setIgnoreMouseEvents()
+    // decides who RECEIVES the pointer. Default off for backward
+    // compatibility; the main process turns it on from the persisted setting.
+    this.cursorPolicy = new CursorPolicy({ logger });
     this.activeWindow = 'main';
     this.isInteractive = true; // default to interactive so windows are clickable/drag-able
     this.isVisible = false;
@@ -460,7 +467,21 @@ class WindowManager {
 
   // Load the HTML file
     await window.loadFile(windowConfig.file);
-    
+
+    // Bring this window in line with the cursor-shape setting before it can
+    // become visible, so an enabled policy never shows a contextual cursor
+    // for a frame. Registration also binds did-finish-load, so the policy
+    // survives reloads and navigations. Failures are isolated inside the
+    // policy and must never block window creation.
+    try {
+      await this.cursorPolicy.register(window.webContents);
+    } catch (error) {
+      logger.warn('Could not apply cursor policy to new window', {
+        type,
+        error: error.message
+      });
+    }
+
   // Position the window
     this.positionWindow(window, type);
     
@@ -530,6 +551,52 @@ class WindowManager {
     });
 
     return window;
+  }
+
+  /**
+   * Turn cursor-shape locking on or off for every OpenCluely window.
+   *
+   * This is purely cosmetic: it forces one neutral arrow so the pointer shape
+   * cannot betray an invisible overlay during a screen share. It does NOT
+   * change who receives mouse input — setInteractive() /
+   * setIgnoreMouseEvents() and the Alt+A click-through toggle are untouched,
+   * and while a window is interactive it cannot display the cursor the
+   * application underneath would have chosen.
+   *
+   * @param {boolean} enabled
+   * @returns {Promise<{enabled: boolean, applied: number, failed: number}>}
+   */
+  async setCursorShapeLocked(enabled) {
+    // Pick up any window created outside createWindow() before switching.
+    this._syncCursorPolicyTargets();
+    return this.cursorPolicy.setEnabled(Boolean(enabled));
+  }
+
+  /** Current cursor-lock state, for getSettings() and diagnostics. */
+  isCursorShapeLocked() {
+    return this.cursorPolicy.enabled;
+  }
+
+  /**
+   * Ensure every live OpenCluely window is tracked by the cursor policy.
+   * createWindow() registers each window as it is built; this is a safety net
+   * for any window created by another path.
+   */
+  _syncCursorPolicyTargets() {
+    this.windows.forEach((window, type) => {
+      try {
+        if (!window || window.isDestroyed()) return;
+        const wc = window.webContents;
+        if (!wc || wc.isDestroyed()) return;
+        // register() is idempotent and applies the current setting.
+        this.cursorPolicy.register(wc).catch(() => { /* isolated in policy */ });
+      } catch (error) {
+        logger.warn('Could not sync cursor policy target', {
+          type,
+          error: error.message
+        });
+      }
+    });
   }
 
   applyStealthMeasures(window, type) {

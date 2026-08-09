@@ -40,7 +40,7 @@ It is free and open source. Processing stays on your machine, and the only thing
 - **Session memory.** The whole conversation is remembered, so follow-ups, edge cases, and optimizations keep their context.
 - **Language aware.** Tailored answers for C++, C, Python, Java, and JavaScript.
 - **Stealthy by design.** Runs under ordinary system names, ships with no telemetry, and keeps your session local.
-- **Cross platform.** Pre-built installers for Windows and Linux (.deb and AppImage). macOS runs from source in one command.
+- **Cross platform.** Pre-built installers for macOS (Apple Silicon .dmg), Windows, and Linux (.deb and AppImage), with one-click in-app updates on macOS.
 
 ## Download
 
@@ -48,11 +48,16 @@ Pre-built installers are published with every release. These links always point 
 
 | Platform | File | Notes |
 |---|---|---|
+| macOS (Apple Silicon) | [.dmg](https://github.com/TechyCSR/OpenCluely/releases/latest) | The only file macOS users need. Installs to `/Applications`. |
 | Windows | [Setup .exe](https://github.com/TechyCSR/OpenCluely/releases/latest) | NSIS installer. Adds a Start Menu shortcut. |
 | Linux (Debian or Ubuntu) | [.deb](https://github.com/TechyCSR/OpenCluely/releases/latest) | Pulls system deps automatically (Python, ffmpeg, GTK). |
 | Linux (universal) | [.AppImage](https://github.com/TechyCSR/OpenCluely/releases/latest) | No install. Run `chmod +x` then launch. |
 
-> **macOS:** there is no pre-built download. The app is unsigned and un-notarized, so macOS Gatekeeper blocks it as "damaged and can't be opened." Run OpenCluely from source instead — see [Quick start](#quick-start). It is a one-line `./setup.sh` once Node.js is installed.
+> **macOS:** the `.dmg` is for **Apple Silicon (M1 or later)**. Intel Macs should run from source — see [Quick start](#quick-start).
+>
+> Releases also carry `.zip`, `.blockmap` and `latest-mac.yml` files. Those are consumed by the in-app updater and are not meant to be downloaded manually.
+>
+> **Signing:** builds signed with a local self-signed certificate run on the machine that built them, but Gatekeeper will still warn other users. Only a build signed with an Apple **Developer ID Application** certificate *and* notarized by Apple installs without warnings. See [docs/macos-code-signing.md](docs/macos-code-signing.md) for the difference and how to move from one to the other.
 
 Every build is produced automatically on GitHub Actions and ships with SHA-256 checksums. Each release also lists the full set of commits it includes.
 
@@ -85,7 +90,8 @@ If you would rather build from source, three steps are all it takes.
 
 - On Windows, use Git Bash (included with Git for Windows) or WSL to run `setup.sh`.
 - On macOS and Linux, your normal terminal works.
-- **macOS users must build from source** (steps above) — there is no pre-built `.dmg`. Because the app is unsigned, a downloaded build would be blocked by Gatekeeper as "damaged"; running from source avoids that entirely.
+- **macOS (Apple Silicon)** can use the pre-built `.dmg` from [Download](#download), which also enables one-click in-app updates. **Intel Macs** must build from source (steps above).
+- On first launch macOS asks for **Screen Recording** and **Microphone** access. Both are reviewable later under **Settings ▸ Permissions**, which links straight to the right System Settings pane. Screen Recording changes only take effect after restarting the app.
 - No manual `npm` commands are needed. The script handles everything.
 
 ### Setup script options
@@ -197,7 +203,8 @@ OpenCluely is under active development. The core is stable and improvements ship
 <summary>App issues</summary>
 
 - **Electron will not start or shows a blank window on Linux.** Try `npm run dev`, and make sure X11 or XWayland is available in headless setups.
-- **macOS screen capture does not work.** Grant Screen Recording permission under System Settings, Privacy and Security, then relaunch the app.
+- **macOS screen capture does not work.** Open **Settings ▸ Permissions** in OpenCluely and check the Screen Recording status, or grant it under System Settings ▸ Privacy & Security ▸ Screen Recording. Either way you must **relaunch the app** — macOS only applies a Screen Recording grant to processes started after it.
+- **macOS in-app updates do nothing.** Updates only run in the installed `.app` from the DMG; a source run (`npm start`) deliberately never contacts the update server. Check **Settings ▸ Updates** for the current state and last check time.
 - **Windows SmartScreen blocks the app.** Click More info, then Run anyway, or use `npm start` during development.
 - **Microphone or voice not working.** Voice is optional. For Azure, add valid keys to `.env`. For Whisper, install `openai-whisper`, `ffmpeg`, and `sox`, then set `SPEECH_PROVIDER=whisper`.
 

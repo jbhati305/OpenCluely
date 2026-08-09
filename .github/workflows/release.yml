@@ -179,15 +179,16 @@ jobs:
 
           | Platform | File | Notes |
           |---|---|---|
+          | **macOS (Apple Silicon)** | `OpenCluely-*-mac-arm64.dmg` | The only file macOS users need |
           | **Windows** | `OpenCluely-Setup-*.exe` | NSIS installer — installs app + adds to Start Menu |
           | **Linux** | `*.deb` | Debian/Ubuntu — auto-pulls system deps (Python, ffmpeg, GTK) |
           | **Linux** | `*.AppImage` | Universal — no install, just `chmod +x` and run |
 
-          > **macOS:** no pre-built build is shipped. The app is unsigned/un-notarized, so macOS Gatekeeper blocks it as "damaged". Run OpenCluely from source instead:
-          > ```bash
-          > git clone https://github.com/TechyCSR/OpenCluely && cd OpenCluely && ./setup.sh
-          > ```
-          > Requires Node.js 22.12+. See the [README](https://github.com/TechyCSR/OpenCluely#quick-start) for details.
+          > **macOS notes**
+          > - Apple Silicon (M1 or later) only. Intel Macs should run from source.
+          > - The `.zip`, `.blockmap` and `latest-mac.yml` files are used by the in-app updater. Don't download them manually.
+          > - If this build was signed with a local self-signed certificate rather than an Apple Developer ID, Gatekeeper will still warn on other Macs. A Developer ID + notarized build is required for warning-free installation.
+          > - On first launch macOS asks for **Screen Recording** and **Microphone** access. Both can be reviewed later under **Settings ▸ Permissions**. Screen Recording changes require restarting the app.
 
           ## First Run
 
@@ -227,18 +228,33 @@ jobs:
       - name: Flatten artifacts
         run: |
           mkdir -p release
-          # Pick only the primary installer per platform. This intentionally drops:
+          # Pick the primary installer per platform, plus any macOS updater
+          # metadata. This intentionally drops:
           #   - Windows portable EXE (we ship the NSIS installer)
-          #   - .blockmap files (electron-updater diff metadata)
-          #   - latest-*.yml (electron-updater channel metadata)
           #   - Source archives (GitHub auto-generates these from the tag)
           #
+          # macOS updater metadata (*.zip, *.blockmap, latest-mac.yml) must NOT
+          # be dropped: electron-updater fetches those files directly, and
+          # removing them silently breaks in-app updates for every macOS user.
+          # macOS artifacts are built locally (see docs/macos-release.md) since
+          # signing needs a keychain certificate, so these globs normally match
+          # nothing here — they exist so a future macOS CI job cannot regress.
+          #
           # The order below is the order files appear in the release page.
+          find artifacts -type f -name 'OpenCluely-*-mac-arm64.dmg' \
+            -exec cp -v {} release/ \;
           find artifacts -type f -name 'OpenCluely-Setup-*.exe' \
             -exec cp -v {} release/ \;
           find artifacts -type f -name 'opencluely_*_amd64.deb' \
             -exec cp -v {} release/ \;
           find artifacts -type f -name '*.AppImage' \
+            -exec cp -v {} release/ \;
+          # Updater assets (macOS only; not user-facing downloads).
+          find artifacts -type f -name 'OpenCluely-*-mac-arm64.zip' \
+            -exec cp -v {} release/ \;
+          find artifacts -type f -name '*.blockmap' \
+            -exec cp -v {} release/ \;
+          find artifacts -type f -name 'latest-mac.yml' \
             -exec cp -v {} release/ \;
           echo "--- Files selected for release ---"
           ls -la release/

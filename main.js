@@ -1213,6 +1213,7 @@ class ApplicationController {
       "networking",
       "system-design",
       "lld",
+      "general",
     ];
 
     const currentIndex = availableSkills.indexOf(this.activeSkill);

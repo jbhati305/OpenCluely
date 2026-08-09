@@ -1328,7 +1328,10 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
 
     const fallbackResponses = {
       'dsa': 'This appears to be a data structures and algorithms problem. Consider breaking it down into smaller components and identifying the appropriate algorithm or data structure to use.',
+      'os': 'This looks like an operating systems question. Consider which OS subsystem is involved (processes, memory, scheduling, file systems) and the relevant mechanisms.',
+      'networking': 'This looks like a networking question. Consider which OSI/TCP-IP layer is relevant and the protocol behavior involved.',
       'system-design': 'For this system design question, consider scalability, reliability, and the trade-offs between different architectural approaches.',
+      'lld': 'This looks like a low-level design question. Consider the core entities, their relationships, and which design patterns fit best.',
       'programming': 'This looks like a programming challenge. Focus on understanding the requirements, edge cases, and optimal time/space complexity.',
       'default': 'I can help analyze this content. Please ensure your Gemini API key is properly configured for detailed analysis.'
     };
@@ -1352,6 +1355,9 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
     // Simple heuristic to determine if message seems skill-related
     const skillKeywords = {
       'dsa': ['algorithm', 'data structure', 'array', 'tree', 'graph', 'sort', 'search', 'complexity', 'big o'],
+      'os': ['process', 'thread', 'scheduling', 'deadlock', 'semaphore', 'mutex', 'paging', 'virtual memory', 'kernel'],
+      'networking': ['tcp', 'udp', 'http', 'dns', 'ip address', 'subnet', 'routing', 'socket', 'tls', 'osi layer'],
+      'lld': ['class diagram', 'design pattern', 'interface', 'inheritance', 'low level design', 'solid principles'],
       'programming': ['code', 'function', 'variable', 'class', 'method', 'bug', 'debug', 'syntax'],
       'system-design': ['scalability', 'database', 'architecture', 'microservice', 'load balancer', 'cache'],
       'behavioral': ['interview', 'experience', 'situation', 'leadership', 'conflict', 'team'],

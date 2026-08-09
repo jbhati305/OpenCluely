@@ -1074,6 +1074,10 @@ class ApplicationController {
   navigateSkill(direction) {
     const availableSkills = [
       "dsa",
+      "os",
+      "networking",
+      "system-design",
+      "lld",
     ];
 
     const currentIndex = availableSkills.indexOf(this.activeSkill);
@@ -1146,7 +1150,7 @@ class ApplicationController {
   async _processScreenshotCapture(capture) {
     const sessionHistory = sessionManager.getOptimizedHistory();
 
-    const skillsRequiringProgrammingLanguage = ['dsa'];
+    const skillsRequiringProgrammingLanguage = ['dsa', 'lld'];
     const needsProgrammingLanguage = skillsRequiringProgrammingLanguage.includes(this.activeSkill);
 
     this._responseSeq = (this._responseSeq || 0) + 1;
@@ -1194,7 +1198,7 @@ class ApplicationController {
       sessionManager.addUserInput(text, 'llm_input');
 
       // Check if current skill needs programming language context
-      const skillsRequiringProgrammingLanguage = ['dsa'];
+      const skillsRequiringProgrammingLanguage = ['dsa', 'lld'];
       const needsProgrammingLanguage = skillsRequiringProgrammingLanguage.includes(this.activeSkill);
 
       this._responseSeq = (this._responseSeq || 0) + 1;
@@ -1363,7 +1367,7 @@ class ApplicationController {
       });
 
       // Check if current skill needs programming language context
-      const skillsRequiringProgrammingLanguage = ['dsa'];
+      const skillsRequiringProgrammingLanguage = ['dsa', 'lld'];
       const needsProgrammingLanguage = skillsRequiringProgrammingLanguage.includes(this.activeSkill);
 
       // Stream the answer progressively to the configured speech target.

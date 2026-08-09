@@ -25,7 +25,11 @@ class MainWindowUI {
         
         // Define available skills for navigation
         this.availableSkills = [
-            'dsa'
+            'dsa',
+            'os',
+            'networking',
+            'system-design',
+            'lld'
         ];
         
         this.init();
@@ -288,10 +292,12 @@ class MainWindowUI {
             }
         });
 
-        // Skill indicator click handler toggles DSA skill
+        // Skill indicator click handler cycles through available skills
         this.skillIndicator.addEventListener('click', () => {
             if (!this.isInteractive) return;
-            const newSkill = 'dsa';
+            const currentIndex = this.availableSkills.indexOf(this.currentSkill);
+            const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % this.availableSkills.length;
+            const newSkill = this.availableSkills[nextIndex];
             if (window.electronAPI && window.electronAPI.updateActiveSkill) {
                 window.electronAPI.updateActiveSkill(newSkill).then(() => {
                     this.handleSkillActivated(newSkill);
@@ -520,6 +526,9 @@ class MainWindowUI {
         const skill = data.skill || data.metadata?.skill || 'General';
         const skillNames = {
             'dsa': 'DSA',
+            'os': 'OS',
+            'networking': 'Networking',
+            'lld': 'LLD',
             'behavioral': 'Behavioral', 
             'sales': 'Sales',
             'presentation': 'Presentation',
@@ -759,6 +768,9 @@ class MainWindowUI {
     updateSkillIndicator() {
         const skillNames = {
             'dsa': 'DSA',
+            'os': 'OS',
+            'networking': 'Networking',
+            'lld': 'LLD',
             'behavioral': 'Behavioral', 
             'sales': 'Sales',
             'presentation': 'Presentation',
@@ -872,6 +884,9 @@ class MainWindowUI {
     showSkillChangeNotification(skill, direction) {
         const skillNames = {
             'dsa': 'DSA',
+            'os': 'OS',
+            'networking': 'Networking',
+            'lld': 'LLD',
             'behavioral': 'Behavioral', 
             'sales': 'Sales',
             'presentation': 'Presentation',

@@ -103,6 +103,7 @@ process.on("unhandledRejection", (reason) => {
 const captureService = require("./src/services/capture.service");
 const speechService = require("./src/services/speech.service");
 const llmService = require("./src/services/llm.service");
+const { createScreenshotOcrRunner } = require("./src/controllers/screenshot-ocr");
 
 // Managers
 const windowManager = require("./src/managers/window.manager");
@@ -239,6 +240,7 @@ class ApplicationController {
 
     try {
       this.setupPermissions();
+      this.setupCrashDiagnostics();
       this.setupNetworkConfiguration();
 
       // Small delay to ensure desktop/space detection is accurate
@@ -391,6 +393,42 @@ class ApplicationController {
         callback(granted);
       }
     );
+  }
+
+  setupCrashDiagnostics() {
+    // Register once, at the app level, so window recreation never adds duplicate
+    // listeners. Logs process-exit metadata only — never screenshots, prompts,
+    // API keys, environment values, or conversation content.
+    if (this._crashDiagnosticsInstalled) return;
+    this._crashDiagnosticsInstalled = true;
+
+    app.on("child-process-gone", (_event, details = {}) => {
+      logger.error("Child process gone", {
+        type: details.type,
+        reason: details.reason,
+        exitCode: details.exitCode,
+        name: details.name,
+        serviceName: details.serviceName,
+        timestamp: new Date().toISOString(),
+      });
+    });
+
+    app.on("render-process-gone", (_event, webContents, details = {}) => {
+      let windowType = "unknown";
+      try {
+        windowType = windowManager.findWindowTypeByWebContents(webContents) || "unknown";
+      } catch (_) {
+        /* best-effort only */
+      }
+      logger.error("Renderer process gone", {
+        windowType,
+        reason: details.reason,
+        exitCode: details.exitCode,
+        timestamp: new Date().toISOString(),
+      });
+    });
+
+    logger.debug("Crash diagnostics installed (child-process-gone, render-process-gone)");
   }
 
   setupGlobalShortcuts() {
@@ -1076,80 +1114,77 @@ class ApplicationController {
       return;
     }
 
-    const startTime = Date.now();
-
-    try {
-      windowManager.showLLMLoading();
-
-  const capture = await captureService.captureAndProcess();
-
-      if (!capture.imageBuffer || !capture.imageBuffer.length) {
-        windowManager.hideLLMResponse();
-        this.broadcastOCRError("Failed to capture screenshot image");
-        return;
-      }
-
-      // Use image directly with LLM and active skill; do not send chat messages here
-      const sessionHistory = sessionManager.getOptimizedHistory();
-
-      const skillsRequiringProgrammingLanguage = ['dsa'];
-      const needsProgrammingLanguage = skillsRequiringProgrammingLanguage.includes(this.activeSkill);
-
-      this._responseSeq = (this._responseSeq || 0) + 1;
-      const messageId = `img-${Date.now()}-${this._responseSeq}`;
-      windowManager.broadcastToAllWindows("transcription-llm-response-start", {
-        messageId,
-        skill: this.activeSkill
-      });
-
-      const llmResult = await llmService.processImageWithSkillStream(
-        capture.imageBuffer,
-        capture.mimeType || 'image/png',
-        this.activeSkill,
-        sessionHistory.recent,
-        needsProgrammingLanguage ? this.codingLanguage : null,
-        (delta) => {
-          windowManager.broadcastToAllWindows("transcription-llm-response-chunk", {
-            messageId,
-            delta
+    // Lazily build the runner once. It enforces the shared concurrency policy
+    // for both the Cmd+Shift+S shortcut and the take-screenshot IPC path, shows
+    // the AI loading state only after capture succeeds, and guarantees the
+    // loading UI is cleared on every failure path.
+    if (!this._screenshotRunner) {
+      this._screenshotRunner = createScreenshotOcrRunner({
+        captureService,
+        windowManager,
+        logger,
+        broadcastOCRError: (msg) => this.broadcastOCRError(msg),
+        recordFailure: (error) => {
+          sessionManager.addConversationEvent({
+            role: 'system',
+            content: `Screenshot OCR failed: ${error.message}`,
+            action: 'ocr_error',
+            metadata: { error: error.message }
           });
-        }
-      );
-      llmResult.metadata = { ...llmResult.metadata, messageId };
-
-      sessionManager.addModelResponse(llmResult.response, {
-        skill: this.activeSkill,
-        processingTime: llmResult.metadata.processingTime,
-        usedFallback: llmResult.metadata.usedFallback,
-        isImageAnalysis: true
-      });
-
-      this.broadcastTranscriptionLLMResponse(llmResult);
-
-      windowManager.showLLMResponse(llmResult.response, {
-        skill: this.activeSkill,
-        processingTime: llmResult.metadata.processingTime,
-        usedFallback: llmResult.metadata.usedFallback,
-        isImageAnalysis: true
-      });
-    } catch (error) {
-      logger.error("Screenshot OCR process failed", {
-        error: error.message,
-        duration: Date.now() - startTime,
-      });
-
-      windowManager.hideLLMResponse();
-      this.broadcastOCRError(error.message);
-      
-      sessionManager.addConversationEvent({
-        role: 'system',
-        content: `Screenshot OCR failed: ${error.message}`,
-        action: 'ocr_error',
-        metadata: {
-          error: error.message
-        }
+        },
+        onCaptureReady: (capture) => this._processScreenshotCapture(capture)
       });
     }
+
+    await this._screenshotRunner.run();
+  }
+
+  // The successful image->LLM streaming path, unchanged from the original
+  // triggerScreenshotOCR body. Invoked by the runner only after a screenshot
+  // has been captured successfully.
+  async _processScreenshotCapture(capture) {
+    const sessionHistory = sessionManager.getOptimizedHistory();
+
+    const skillsRequiringProgrammingLanguage = ['dsa'];
+    const needsProgrammingLanguage = skillsRequiringProgrammingLanguage.includes(this.activeSkill);
+
+    this._responseSeq = (this._responseSeq || 0) + 1;
+    const messageId = `img-${Date.now()}-${this._responseSeq}`;
+    windowManager.broadcastToAllWindows("transcription-llm-response-start", {
+      messageId,
+      skill: this.activeSkill
+    });
+
+    const llmResult = await llmService.processImageWithSkillStream(
+      capture.imageBuffer,
+      capture.mimeType || 'image/png',
+      this.activeSkill,
+      sessionHistory.recent,
+      needsProgrammingLanguage ? this.codingLanguage : null,
+      (delta) => {
+        windowManager.broadcastToAllWindows("transcription-llm-response-chunk", {
+          messageId,
+          delta
+        });
+      }
+    );
+    llmResult.metadata = { ...llmResult.metadata, messageId };
+
+    sessionManager.addModelResponse(llmResult.response, {
+      skill: this.activeSkill,
+      processingTime: llmResult.metadata.processingTime,
+      usedFallback: llmResult.metadata.usedFallback,
+      isImageAnalysis: true
+    });
+
+    this.broadcastTranscriptionLLMResponse(llmResult);
+
+    windowManager.showLLMResponse(llmResult.response, {
+      skill: this.activeSkill,
+      processingTime: llmResult.metadata.processingTime,
+      usedFallback: llmResult.metadata.usedFallback,
+      isImageAnalysis: true
+    });
   }
 
   async processWithLLM(text, sessionHistory) {

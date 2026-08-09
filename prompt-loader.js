@@ -6,8 +6,9 @@ class PromptLoader {
     this.prompts = new Map();
     this.promptsLoaded = false;
     this.skillPromptSent = new Set();
-    // Focus only on DSA
-    this.skillsRequiringProgrammingLanguage = ['dsa'];
+    // Supported skills: DSA, OS, Networking, System Design, LLD
+    this.supportedSkills = ['dsa', 'os', 'networking', 'system-design', 'lld'];
+    this.skillsRequiringProgrammingLanguage = ['dsa', 'lld'];
   }
 
   /**
@@ -28,7 +29,7 @@ class PromptLoader {
       for (const file of files) {
         if (file.endsWith('.md')) {
           const skillName = path.basename(file, '.md');
-          if (skillName !== 'dsa') continue; // only keep DSA
+          if (!this.supportedSkills.includes(skillName)) continue;
           const filePath = path.join(promptsDir, file);
           const promptContent = fs.readFileSync(filePath, 'utf8');
           
@@ -97,6 +98,15 @@ STRICT REQUIREMENTS:
 - Provide: brief approach, then final ${languageTitle} implementation, followed by time/space complexity.
 - If the user's input is a problem statement (and does not include code), produce a complete, runnable ${languageTitle} solution without asking for clarification.
 - Avoid unnecessary verbosity; focus on correctness, clarity, and efficiency.`;
+        break;
+      case 'lld':
+        languageInjection = `\n\n## IMPLEMENTATION LANGUAGE: ${languageUpper}
+STRICT REQUIREMENTS:
+- Respond ONLY in ${languageTitle}. Do not include any snippets or alternatives in other languages.
+- All code blocks must use triple backticks with the exact language tag: \`\`\`${fenceTag}\`\`\`.
+- Model classes/interfaces idiomatically for ${languageTitle} (access modifiers, interfaces/abstract classes, enums as the language supports).
+- Provide: brief design rationale, class diagram in text form, then final ${languageTitle} implementation.
+- Avoid unnecessary verbosity; focus on clean abstractions and extensibility.`;
         break;
       default:
         languageInjection = `\n\n## PROGRAMMING LANGUAGE: ${languageUpper}\nAll code and examples must be in ${languageTitle}. Use code fences with tag: \`\`\`${fenceTag}\`\`\`.`;
@@ -354,7 +364,18 @@ STRICT REQUIREMENTS:
       'distributed-systems': 'system-design',
       'negotiation': 'negotiation',
       'negotiating': 'negotiation',
-      'conflict-resolution': 'negotiation'
+      'conflict-resolution': 'negotiation',
+      'os': 'os',
+      'operating-system': 'os',
+      'operating-systems': 'os',
+      'networking': 'networking',
+      'network': 'networking',
+      'computer-networks': 'networking',
+      'computer-networking': 'networking',
+      'lld': 'lld',
+      'low-level-design': 'lld',
+      'object-oriented-design': 'lld',
+      'ood': 'lld'
     };
 
     return skillMap[normalized] || normalized;
@@ -368,7 +389,7 @@ STRICT REQUIREMENTS:
     if (!this.promptsLoaded) {
       this.loadPrompts();
     }
-    return ['dsa'];
+    return [...this.supportedSkills];
   }
 
   /**

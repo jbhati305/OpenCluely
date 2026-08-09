@@ -24,20 +24,41 @@ test('a general prompt file ships with the app', () => {
   assert.ok(fs.statSync(file).size > 500, 'the prompt should be substantive');
 });
 
-test('the general prompt positions itself as the catch-all, not a specialist', () => {
+test('the general prompt is a discussion track, not a coding one', () => {
   const prompt = read('prompts/general.md');
 
-  assert.match(prompt, /general/i);
-  // It should name the specialised tracks it is NOT.
-  for (const track of ['DSA', 'Operating Systems', 'Networking', 'System Design']) {
-    assert.ok(prompt.includes(track), `should reference ${track} as a separate track`);
-  }
-  assert.match(prompt, /answer the question that was actually asked/i);
+  // This is the whole point of the skill: interview conversation, no code.
+  assert.match(prompt, /never write code/i);
+  assert.match(prompt, /no code blocks/i);
+  assert.match(prompt, /pseudocode/i);
+  assert.ok(!/```/.test(prompt), 'the prompt must not demonstrate code fences');
 });
 
-test('the general prompt tells the model to admit uncertainty', () => {
+test('the general prompt redirects genuinely technical asks to the right track', () => {
   const prompt = read('prompts/general.md');
-  assert.match(prompt, /do not know|don't know/i);
+  for (const track of ['DSA', 'LLD', 'System Design']) {
+    assert.ok(prompt.includes(track), `should name ${track} as the place for code`);
+  }
+});
+
+test('the general prompt covers the usual interview-discussion territory', () => {
+  const prompt = read('prompts/general.md').toLowerCase();
+  for (const topic of ['tell me about yourself', 'behavioural', 'strengths', 'weakness', 'culture fit', 'compensation']) {
+    assert.ok(prompt.includes(topic), `should cover "${topic}"`);
+  }
+});
+
+test('the general prompt answers in the candidate voice and stays speakable', () => {
+  const prompt = read('prompts/general.md');
+  assert.match(prompt, /first person/i);
+  assert.match(prompt, /star/i);
+  assert.match(prompt, /speakable|out loud|spoken/i);
+});
+
+test('the general prompt forbids inventing the user\'s history', () => {
+  const prompt = read('prompts/general.md');
+  assert.match(prompt, /never invent facts/i);
+  assert.match(prompt, /placeholder/i);
 });
 
 // ---- prompt loader wiring ----
@@ -120,8 +141,8 @@ test('general is not added to the language-requiring skills in main', () => {
 
 // ---- UI surfaces ----
 
-test('the settings dropdown offers General Questions', () => {
-  assert.match(settingsHtml, /<option value="general">General Questions<\/option>/);
+test('the settings dropdown offers the general track', () => {
+  assert.match(settingsHtml, /<option value="general">General \/ Interview Discussion<\/option>/);
 });
 
 test('the overlay can navigate to general', () => {

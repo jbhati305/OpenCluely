@@ -68,12 +68,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
       console.error('Error notifying main window ready:', error);
     }
   },
-  quit: () => {
-    try {
-      ipcRenderer.send('quit-app');
-    } catch (error) {
-      console.error('Error in quit:', error);
-    }
+  // Single quit entry point. Previously this fired a fire-and-forget
+  // 'quit-app' message that had two main-process listeners, so one click ran
+  // the whole shutdown twice. invoke() gives the caller a result to await and
+  // lets the main process de-duplicate.
+  quit: () => ipcRenderer.invoke('app:quit'),
+
+  // macOS permissions
+  getPermissionStatus: () => ipcRenderer.invoke('permissions:get-status'),
+  requestMicrophoneAccess: () => ipcRenderer.invoke('permissions:request-microphone'),
+  openPermissionSettings: (permission) =>
+    ipcRenderer.invoke('permissions:open-settings', permission),
+
+  // Updates
+  getUpdateState: () => ipcRenderer.invoke('updates:get-state'),
+  checkForUpdates: () => ipcRenderer.invoke('updates:check'),
+  installUpdate: () => ipcRenderer.invoke('updates:install'),
+  onUpdateState: (callback) => {
+    const wrapped = (_event, state) => {
+      try { callback(state); } catch (e) { console.error('onUpdateState error:', e); }
+    };
+    ipcRenderer.on('updates:state', wrapped);
+    return () => ipcRenderer.removeListener('updates:state', wrapped);
   },
   
   // LLM window specific methods
@@ -128,9 +144,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
 contextBridge.exposeInMainWorld('api', {
     send: (channel, data) => {
+        // NOTE: 'quit-app' was deliberately removed. Quitting is now an
+        // invoke-based call (electronAPI.quit) with a single main-process
+        // handler, so it cannot be triggered twice from one user action.
         let validChannels = [
             'close-settings',
-            'quit-app',
             'save-settings',
             'toggle-recording',
             'toggle-interaction-mode',

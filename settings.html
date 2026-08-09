@@ -342,6 +342,66 @@
             transition: width 0.25s ease;
         }
 
+        /*
+         * Native checkbox, lightly restyled. Deliberately NOT replaced with a
+         * div-based switch: keeping the real input preserves keyboard
+         * operability, label association and screen-reader semantics for free.
+         */
+        .settings-checkbox {
+            appearance: none;
+            -webkit-appearance: none;
+            flex-shrink: 0;
+            width: 38px;
+            height: 22px;
+            margin: 0;
+            border-radius: 11px;
+            background: rgba(255, 255, 255, 0.15);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            position: relative;
+            cursor: pointer;
+            transition: background 0.2s ease, border-color 0.2s ease;
+        }
+
+        .settings-checkbox::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.85);
+            transition: transform 0.2s ease;
+        }
+
+        .settings-checkbox:checked {
+            background: rgba(52, 199, 89, 0.55);
+            border-color: rgba(52, 199, 89, 0.7);
+        }
+
+        .settings-checkbox:checked::after {
+            transform: translateX(16px);
+        }
+
+        .settings-checkbox:disabled {
+            opacity: 0.45;
+            cursor: default;
+        }
+
+        /* Visible keyboard focus — must survive the restyle above. */
+        .settings-checkbox:focus-visible {
+            outline: 2px solid rgba(120, 190, 255, 0.9);
+            outline-offset: 2px;
+        }
+
+        /* Let the text column shrink so long copy wraps instead of
+           overflowing the narrow settings window. */
+        .settings-item-text {
+            min-width: 0;
+            flex: 1;
+            padding-right: 12px;
+        }
+
         .restart-hint {
             font-size: 11px;
             color: rgb(255, 195, 110);
@@ -401,6 +461,33 @@
                             <option value="system-design">System Design</option>
                             <option value="lld">Low-Level Design</option>
                         </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <div class="settings-section-title">
+                    <i class="fas fa-user-secret"></i>
+                    Privacy
+                </div>
+                <div class="settings-section-content">
+                    <div class="settings-item">
+                        <div class="settings-item-text">
+                            <label class="settings-item-label" for="lockCursorShape">Lock cursor to arrow</label>
+                            <div class="settings-item-description" id="lockCursorShapeDesc">
+                                Prevents OpenCluely controls and text fields from changing the pointer
+                                to a hand, I-beam, resize, or grab cursor.
+                            </div>
+                        </div>
+                        <input
+                            type="checkbox"
+                            class="settings-checkbox"
+                            id="lockCursorShape"
+                            aria-describedby="lockCursorShapeDesc lockCursorShapeNote">
+                    </div>
+                    <div class="settings-note" id="lockCursorShapeNote">
+                        This does not copy the cursor from the app underneath. Use click-through
+                        mode (<code>Alt+A</code>) when you want the underlying app to receive mouse input.
                     </div>
                 </div>
             </div>

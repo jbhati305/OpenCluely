@@ -21,6 +21,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const codingLanguageSelect = document.getElementById('codingLanguage');
     const activeSkillSelect = document.getElementById('activeSkill');
     const iconGrid = document.getElementById('iconGrid');
+    const lockCursorShapeInput = document.getElementById('lockCursorShape');
 
     // Check if window.api exists
     if (!window.api) {
@@ -98,6 +99,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (whisperSegmentMsInput) whisperSegmentMsInput.value = settings.whisperSegmentMs || '';
         if (geminiKeyInput) geminiKeyInput.value = settings.geminiKey || '';
         if (windowGapInput) windowGapInput.value = settings.windowGap || '';
+
+        // Cursor lock is a real boolean from getSettings(). Guard against a
+        // save that is still in flight so a refresh cannot clobber the value
+        // the user just chose.
+        if (lockCursorShapeInput && !lockCursorShapeInput.dataset.saving) {
+            lockCursorShapeInput.checked = settings.lockCursorShape === true;
+        }
 
         // Set C++ as default if no coding language is specified
         if (codingLanguageSelect) {
@@ -335,6 +343,60 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => {
         requestCurrentSettings();
     }, 200);
+
+    // ── Cursor-shape privacy ──────────────────────────────────────────
+    //
+    // Saves through the existing invoke-based settings API rather than a
+    // cursor-specific IPC channel. The main process owns the setting, persists
+    // it, and pushes it to every window.
+
+    if (lockCursorShapeInput) {
+        const noteEl = document.getElementById('lockCursorShapeNote');
+        const baseNote = noteEl ? noteEl.textContent : '';
+        let noteTimer = null;
+
+        const showCursorError = (message) => {
+            console.error('Lock cursor to arrow:', message);
+            if (!noteEl) return;
+            noteEl.textContent = `Could not save this setting: ${message}`;
+            noteEl.style.color = 'rgb(255, 145, 138)';
+            if (noteTimer) clearTimeout(noteTimer);
+            noteTimer = setTimeout(() => {
+                noteEl.textContent = baseNote;
+                noteEl.style.color = '';
+            }, 6000);
+        };
+
+        lockCursorShapeInput.addEventListener('change', async (e) => {
+            // Guard against overlapping saves (rapid toggling).
+            if (lockCursorShapeInput.dataset.saving) return;
+
+            const desired = e.target.checked === true;
+            const previous = !desired;
+
+            lockCursorShapeInput.dataset.saving = '1';
+            lockCursorShapeInput.disabled = true;
+
+            try {
+                // Send an actual boolean; the main process rejects anything else.
+                const result = await window.electronAPI.saveSettings({
+                    lockCursorShape: desired
+                });
+
+                if (result && result.success === false) {
+                    // Never leave the UI showing a value that was not applied.
+                    lockCursorShapeInput.checked = previous;
+                    showCursorError(result.error || 'unknown error');
+                }
+            } catch (error) {
+                lockCursorShapeInput.checked = previous;
+                showCursorError((error && error.message) || 'settings channel unavailable');
+            } finally {
+                delete lockCursorShapeInput.dataset.saving;
+                lockCursorShapeInput.disabled = false;
+            }
+        });
+    }
 
     // ── macOS permissions ─────────────────────────────────────────────
     //

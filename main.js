@@ -130,6 +130,11 @@ const {
 } = require("./src/core/app-identity");
 const { MacPermissionsService } = require("./src/services/mac-permissions.service");
 const { UpdaterService } = require("./src/services/updater.service");
+const {
+  parseLockCursorShape,
+  resolveLockCursorShapeUpdate,
+  LOCK_CURSOR_SHAPE_ENV_KEY,
+} = require("./src/core/cursor-policy");
 
 class ApplicationController {
   constructor() {
@@ -139,6 +144,12 @@ class ApplicationController {
   // Default to C++ so language is enforced from first run
   this.codingLanguage = "cpp";
     this.speechAvailable = false;
+
+    // Cursor-shape privacy. Read once at construction so startup windows are
+    // created with the correct setting already known. Defaults to false when
+    // LOCK_CURSOR_SHAPE is absent or unparseable, preserving existing
+    // contextual-cursor behaviour for everyone who has not opted in.
+    this.lockCursorShape = parseLockCursorShape(process.env.LOCK_CURSOR_SHAPE);
 
     // Utterance coalescing: VAD emits a transcript per natural pause, but a
     // single spoken question can still arrive as a few fragments (mid-thought
@@ -379,6 +390,11 @@ class ApplicationController {
         this.isFirstRun = false;
       }
       const isFirstRun = status.needsOnboarding;
+
+      // Seed the cursor policy BEFORE any window exists. createWindow()
+      // registers each window as it loads, so they are born with the correct
+      // cursor behaviour instead of briefly showing contextual cursors.
+      await windowManager.setCursorShapeLocked(this.lockCursorShape);
 
       await windowManager.initializeWindows({ showMainWindow: !isFirstRun });
       this.setupGlobalShortcuts();
@@ -1829,6 +1845,10 @@ class ApplicationController {
       selectedIcon: this.appIcon || "terminal",
       windowGap: windowManager.windowGap,
 
+      // Always a real boolean, never the raw env string, so the renderer can
+      // bind it straight to a checkbox.
+      lockCursorShape: Boolean(this.lockCursorShape),
+
       speechProvider: speechService.provider || "whisper",
       azureKey: process.env.AZURE_SPEECH_KEY || "",
       azureRegion: process.env.AZURE_SPEECH_REGION || "",
@@ -1874,6 +1894,16 @@ class ApplicationController {
         if (Number.isFinite(gap)) windowManager.setWindowGap(gap);
       }
 
+      // ── Cursor-shape privacy ──
+      // Only an actual boolean is accepted; see resolveLockCursorShapeUpdate.
+      const cursorLock = resolveLockCursorShapeUpdate(settings);
+      if (cursorLock.rejected) {
+        logger.warn("Ignoring non-boolean lockCursorShape from renderer", {
+          received: cursorLock.receivedType,
+        });
+      }
+      const cursorLockRequested = cursorLock.requested;
+
       // ── Persist provider / API-key fields back to .env ──
       // The settings UI is now the source of truth for these values.
       // Writing to .env ensures they survive app restarts and are picked
@@ -1912,6 +1942,10 @@ class ApplicationController {
       if (settings.geminiKey !== undefined) {
         envUpdates.GEMINI_API_KEY = settings.geminiKey;
       }
+      if (cursorLockRequested !== null) {
+        // Canonical "true"/"false" only.
+        envUpdates[LOCK_CURSOR_SHAPE_ENV_KEY] = cursorLock.envValue;
+      }
 
       // Capture the previous whisper command BEFORE persisting — persistEnvUpdates
       // mutates process.env in place, so comparing afterwards would always read
@@ -1920,6 +1954,21 @@ class ApplicationController {
       const prevWhisperCommand = process.env.WHISPER_COMMAND || '';
 
       const persistedKeys = this.persistEnvUpdates(envUpdates);
+
+      // Apply the cursor policy only once persistence has succeeded —
+      // persistEnvUpdates() throws on failure, so reaching here means the
+      // value is durable and the UI can safely keep showing it.
+      if (cursorLockRequested !== null) {
+        this.lockCursorShape = cursorLockRequested;
+        // Async CSS injection; failures are isolated per window inside the
+        // policy and must not fail the save that already persisted.
+        windowManager
+          .setCursorShapeLocked(cursorLockRequested)
+          .catch((error) =>
+            logger.warn("Cursor lock applied with errors", { error: error.message })
+          );
+        logger.info("Cursor shape lock updated", { enabled: cursorLockRequested });
+      }
 
       // If the Gemini key was just saved, reinitialize the LLM service
       // so the new client picks up the key. Without this, the test-

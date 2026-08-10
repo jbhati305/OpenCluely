@@ -548,6 +548,121 @@
                 </div>
             </div>
 
+            <!--
+              AI provider. Hidden entirely unless the local experimental gate
+              (OPENCLUELY_ENABLE_CLAUDE_SUBSCRIPTION_EXPERIMENTAL=true) is set.
+              There is deliberately no password field, no token field, no
+              embedded login and no logout button — OpenCluely never handles
+              Claude credentials.
+            -->
+            <div class="settings-section" id="aiProviderSection">
+                <div class="settings-section-title">
+                    <i class="fas fa-microchip"></i>
+                    AI Provider
+                </div>
+                <div class="settings-section-content">
+                    <!-- Local opt-in. Stored under Electron userData, so the
+                         installed app works from Finder with no shell setup. -->
+                    <div class="settings-item">
+                        <div class="settings-item-text">
+                            <div class="settings-item-label">Enable local Claude subscription integration</div>
+                            <div class="settings-item-description">
+                                <strong>Personal local experiment.</strong> Uses the Claude subscription already
+                                authenticated through the Claude CLI on this Mac. Requests are processed in the cloud
+                                by Anthropic and draw from your subscription usage limits. Anthropic's developer
+                                documentation does not permit third-party products to offer Claude subscription login
+                                without prior approval — do not distribute a build with this enabled.
+                            </div>
+                        </div>
+                        <div class="settings-item-actions">
+                            <label class="settings-checkbox">
+                                <input type="checkbox" id="claudeIntegrationEnabled" />
+                                <span>Enable</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="settings-item">
+                        <div class="settings-item-text">
+                            <div class="settings-item-label">Model provider</div>
+                            <div class="settings-item-description" id="aiProviderDescription">
+                                Gemini is the default provider.
+                            </div>
+                        </div>
+                        <div class="settings-item-actions">
+                            <select class="form-select" id="aiProviderSelect">
+                                <option value="gemini">Gemini API</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="settings-item" id="claudeExecutableRow" style="display: none;">
+                        <div class="settings-item-text">
+                            <div class="settings-item-label">Claude CLI executable</div>
+                            <div class="settings-item-description" id="claudeExecutableStatus">
+                                A Finder-launched app does not inherit your shell PATH, so the Claude CLI may need to
+                                be selected explicitly here.
+                            </div>
+                            <input
+                                type="text"
+                                class="form-input"
+                                id="claudeExecutablePath"
+                                spellcheck="false"
+                                autocomplete="off"
+                                placeholder="/Users/you/.local/bin/claude"
+                            />
+                        </div>
+                        <div class="settings-item-actions">
+                            <button class="btn btn-small" id="claudeDetectBtn" type="button">
+                                <i class="fas fa-wand-magic-sparkles"></i>
+                                Auto-detect
+                            </button>
+                            <button class="btn btn-small" id="claudeBrowseBtn" type="button">
+                                <i class="fas fa-folder-open"></i>
+                                Browse…
+                            </button>
+                            <button class="btn btn-small" id="claudeValidateBtn" type="button">
+                                <i class="fas fa-check"></i>
+                                Validate &amp; Save
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="settings-item" id="claudeProviderDetail" style="display: none;">
+                        <div class="settings-item-text">
+                            <div class="settings-item-label">Claude connection</div>
+                            <div class="settings-item-description" id="claudeStatusDetail">
+                                Uses the Claude subscription already authenticated through the Claude CLI on
+                                this Mac. OpenCluely does not store your Claude credentials.
+                            </div>
+                        </div>
+                        <div class="settings-item-actions">
+                            <span class="status-pill is-pending" id="claudeStatusPill">Unknown</span>
+                            <button class="btn btn-small" id="claudeRefreshBtn" type="button">
+                                <i class="fas fa-rotate"></i>
+                                Refresh authentication
+                            </button>
+                            <button class="btn btn-small" id="claudeTestBtn" type="button">
+                                <i class="fas fa-plug"></i>
+                                Test Connection
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="settings-item" id="claudeProviderWarning" style="display: none;">
+                        <div class="settings-item-text">
+                            <div class="settings-item-description">
+                                <strong>Experimental, local only.</strong> Requests are processed in the cloud by
+                                Anthropic and draw from your Claude subscription usage limits. Anthropic's developer
+                                documentation does not permit third-party products to offer Claude subscription login
+                                without prior approval, so do not distribute a build with this enabled.
+                                If Claude disconnects, run <code>claude auth login</code> in Terminal.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="settings-section" id="updatesSection">
                 <div class="settings-section-title">
                     <i class="fas fa-cloud-arrow-down"></i>

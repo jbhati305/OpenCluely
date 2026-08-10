@@ -509,6 +509,278 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // ── AI provider (experimental) ────────────────────────────────────
+    //
+    // The whole section stays hidden unless the local gate is on. Nothing here
+    // ever renders a token, a credential path or an account identifier — the
+    // main process only sends {available, authenticated, credentialSource,
+    // plan, errorCode}.
+
+    const aiProviderSection = document.getElementById('aiProviderSection');
+    const aiProviderSelect = document.getElementById('aiProviderSelect');
+    const aiProviderDescription = document.getElementById('aiProviderDescription');
+    const claudeProviderDetail = document.getElementById('claudeProviderDetail');
+    const claudeProviderWarning = document.getElementById('claudeProviderWarning');
+    const claudeStatusPill = document.getElementById('claudeStatusPill');
+    const claudeStatusDetail = document.getElementById('claudeStatusDetail');
+    const claudeRefreshBtn = document.getElementById('claudeRefreshBtn');
+    const claudeTestBtn = document.getElementById('claudeTestBtn');
+
+    const CLAUDE_ERROR_TEXT = {
+        CLAUDE_NOT_AUTHENTICATED: 'Not signed in. Run "claude auth login" in Terminal, then Refresh.',
+        CLAUDE_SUBSCRIPTION_REQUIRED: 'Claude is signed in with API billing. This provider needs a subscription login.',
+        CLAUDE_AUTH_SOURCE_UNKNOWN: 'Could not confirm how Claude is authenticated, so it was not used.',
+        CLAUDE_SDK_UNAVAILABLE: 'The Claude CLI could not be found on this Mac.',
+        CLAUDE_RATE_LIMITED: 'Your Claude subscription usage limit was reached.',
+        CLAUDE_TIMEOUT: 'Claude did not respond in time.',
+        CLAUDE_BUSY: 'Another Claude request is still running.'
+    };
+
+    const BASE_CLAUDE_TEXT =
+        'Uses the Claude subscription already authenticated through the Claude CLI on this Mac. ' +
+        'OpenCluely does not store your Claude credentials.';
+
+    const claudeEnabledToggle = document.getElementById('claudeIntegrationEnabled');
+    const claudeExecutableRow = document.getElementById('claudeExecutableRow');
+    const claudeExecutablePath = document.getElementById('claudeExecutablePath');
+    const claudeExecutableStatus = document.getElementById('claudeExecutableStatus');
+    const claudeDetectBtn = document.getElementById('claudeDetectBtn');
+    const claudeBrowseBtn = document.getElementById('claudeBrowseBtn');
+    const claudeValidateBtn = document.getElementById('claudeValidateBtn');
+
+    const renderAiProviderState = (state) => {
+        if (!state || !aiProviderSection) return;
+
+        // The section itself is always visible now: the opt-in toggle lives
+        // inside it, so the installed app can enable the experiment without a
+        // shell variable. Only the Claude-specific rows are conditional.
+        aiProviderSection.style.display = '';
+
+        if (claudeEnabledToggle && claudeEnabledToggle.dataset.saving !== 'true') {
+            claudeEnabledToggle.checked = Boolean(state.experimentEnabled);
+        }
+
+        const selectRow = aiProviderSelect ? aiProviderSelect.closest('.settings-item') : null;
+        if (selectRow) selectRow.style.display = state.experimentEnabled ? '' : 'none';
+        if (claudeExecutableRow) claudeExecutableRow.style.display = state.experimentEnabled ? '' : 'none';
+
+        if (state.executable) {
+            if (claudeExecutablePath && document.activeElement !== claudeExecutablePath) {
+                claudeExecutablePath.value = state.executable.path || '';
+            }
+            if (claudeExecutableStatus) {
+                const label = state.executable.source === 'configured'
+                    ? 'Configured'
+                    : state.executable.source === 'bundled'
+                        ? 'Bundled with the Agent SDK'
+                        : 'Not found';
+                claudeExecutableStatus.textContent = `${label} — ${state.executable.message}`;
+            }
+        }
+
+        if (!state.experimentEnabled) {
+            if (claudeProviderDetail) claudeProviderDetail.style.display = 'none';
+            if (claudeProviderWarning) claudeProviderWarning.style.display = 'none';
+            if (aiProviderDescription) {
+                aiProviderDescription.textContent = 'Gemini is the default provider.';
+            }
+            return;
+        }
+
+        if (aiProviderSelect) {
+            const options = (state.available || []).map(
+                (p) => `<option value="${p.id}">${p.label}</option>`
+            );
+            aiProviderSelect.innerHTML = options.join('');
+            aiProviderSelect.value = state.active;
+        }
+
+        const claudeActive = state.active === 'claude-agent';
+        if (claudeProviderDetail) claudeProviderDetail.style.display = claudeActive ? '' : 'none';
+        if (claudeProviderWarning) claudeProviderWarning.style.display = claudeActive ? '' : 'none';
+
+        if (aiProviderDescription) {
+            aiProviderDescription.textContent = state.gated
+                ? 'Claude was requested but is not enabled on this machine. Using Gemini.'
+                : claudeActive
+                    ? 'Claude Agent (local experiment) is handling requests.'
+                    : 'Gemini is the default provider.';
+        }
+
+        const claude = state.claude;
+        if (claudeStatusPill) {
+            const ok = claude && claude.available;
+            claudeStatusPill.textContent = ok ? 'Connected' : 'Not connected';
+            claudeStatusPill.className = `status-pill ${ok ? 'is-granted' : 'is-error'}`;
+        }
+        if (claudeStatusDetail) {
+            if (claude && claude.available) {
+                const plan = claude.plan ? ` (${claude.plan} plan)` : '';
+                claudeStatusDetail.textContent = `Signed in with your Claude subscription${plan}. ${BASE_CLAUDE_TEXT}`;
+            } else if (claude && claude.errorCode) {
+                claudeStatusDetail.textContent = CLAUDE_ERROR_TEXT[claude.errorCode] || BASE_CLAUDE_TEXT;
+            } else {
+                claudeStatusDetail.textContent = BASE_CLAUDE_TEXT;
+            }
+        }
+    };
+
+    const refreshAiProvider = async () => {
+        if (!window.electronAPI || !window.electronAPI.getAiProviderState) return;
+        try {
+            renderAiProviderState(await window.electronAPI.getAiProviderState());
+        } catch (error) {
+            console.error('Failed to read AI provider state:', error);
+        }
+    };
+
+    if (aiProviderSelect) {
+        aiProviderSelect.addEventListener('change', async () => {
+            const previous = aiProviderSelect.dataset.current || 'gemini';
+            const chosen = aiProviderSelect.value;
+            aiProviderSelect.disabled = true;
+            try {
+                const result = await window.electronAPI.setAiProvider(chosen);
+                if (!result || !result.success) {
+                    // Keep the previously working provider selected.
+                    aiProviderSelect.value = previous;
+                    if (aiProviderDescription && result && result.error) {
+                        aiProviderDescription.textContent = result.error;
+                    }
+                    return;
+                }
+                aiProviderSelect.dataset.current = chosen;
+                await refreshAiProvider();
+            } catch (error) {
+                aiProviderSelect.value = previous;
+                console.error('Failed to change provider:', error);
+            } finally {
+                aiProviderSelect.disabled = false;
+            }
+        });
+    }
+
+    if (claudeEnabledToggle) {
+        claudeEnabledToggle.addEventListener('change', async () => {
+            const desired = claudeEnabledToggle.checked;
+            claudeEnabledToggle.dataset.saving = 'true';
+            claudeEnabledToggle.disabled = true;
+            try {
+                const result = await window.electronAPI.setAiProviderEnabled(desired);
+                if (!result || !result.success) {
+                    claudeEnabledToggle.checked = !desired; // roll back
+                }
+            } catch (error) {
+                claudeEnabledToggle.checked = !desired;
+                console.error('Failed to toggle Claude integration:', error);
+            } finally {
+                claudeEnabledToggle.dataset.saving = 'false';
+                claudeEnabledToggle.disabled = false;
+                await refreshAiProvider();
+            }
+        });
+    }
+
+    const setExecutableStatus = (text) => {
+        if (claudeExecutableStatus) claudeExecutableStatus.textContent = text;
+    };
+
+    if (claudeDetectBtn) {
+        claudeDetectBtn.addEventListener('click', async () => {
+            claudeDetectBtn.disabled = true;
+            try {
+                const found = await window.electronAPI.autoDetectClaudeExecutable();
+                if (found && found.found) {
+                    if (claudeExecutablePath) claudeExecutablePath.value = found.path;
+                    setExecutableStatus(`Found (${found.source}). Click Validate & Save to use it.`);
+                } else {
+                    setExecutableStatus('No Claude CLI found automatically. Use Browse… to select one.');
+                }
+            } catch (error) {
+                console.error('Auto-detect failed:', error);
+            } finally {
+                claudeDetectBtn.disabled = false;
+            }
+        });
+    }
+
+    if (claudeBrowseBtn) {
+        claudeBrowseBtn.addEventListener('click', async () => {
+            claudeBrowseBtn.disabled = true;
+            try {
+                const picked = await window.electronAPI.browseClaudeExecutable();
+                if (picked && !picked.canceled) {
+                    if (claudeExecutablePath) claudeExecutablePath.value = picked.path;
+                    setExecutableStatus(picked.valid
+                        ? 'Looks valid. Click Validate & Save to use it.'
+                        : picked.message);
+                }
+            } catch (error) {
+                console.error('Browse failed:', error);
+            } finally {
+                claudeBrowseBtn.disabled = false;
+            }
+        });
+    }
+
+    if (claudeValidateBtn) {
+        claudeValidateBtn.addEventListener('click', async () => {
+            claudeValidateBtn.disabled = true;
+            setExecutableStatus('Validating…');
+            try {
+                const value = claudeExecutablePath ? claudeExecutablePath.value.trim() : '';
+                const result = await window.electronAPI.setClaudeExecutable(value);
+                if (result && result.success) {
+                    setExecutableStatus(result.cleared
+                        ? 'Cleared. Falling back to the bundled Agent SDK executable.'
+                        : `Saved${result.version ? ` — ${result.version}` : ''}.`);
+                } else {
+                    setExecutableStatus((result && result.message) || 'That path could not be used.');
+                }
+            } catch (error) {
+                setExecutableStatus('Validation failed.');
+                console.error('Validate failed:', error);
+            } finally {
+                claudeValidateBtn.disabled = false;
+                await refreshAiProvider();
+            }
+        });
+    }
+
+    if (claudeRefreshBtn) {
+        claudeRefreshBtn.addEventListener('click', async () => {
+            claudeRefreshBtn.disabled = true;
+            try { await refreshAiProvider(); } finally { claudeRefreshBtn.disabled = false; }
+        });
+    }
+
+    if (claudeTestBtn) {
+        claudeTestBtn.addEventListener('click', async () => {
+            claudeTestBtn.disabled = true;
+            if (claudeStatusPill) {
+                claudeStatusPill.textContent = 'Testing…';
+                claudeStatusPill.className = 'status-pill is-pending';
+            }
+            try {
+                const result = await window.electronAPI.testAiProvider();
+                if (claudeStatusPill) {
+                    const ok = result && result.success;
+                    claudeStatusPill.textContent = ok ? 'Connected' : 'Failed';
+                    claudeStatusPill.className = `status-pill ${ok ? 'is-granted' : 'is-error'}`;
+                }
+                if (claudeStatusDetail && result && !result.success && result.errorCode) {
+                    claudeStatusDetail.textContent = CLAUDE_ERROR_TEXT[result.errorCode] || BASE_CLAUDE_TEXT;
+                }
+            } catch (error) {
+                console.error('Provider test failed:', error);
+            } finally {
+                claudeTestBtn.disabled = false;
+            }
+        });
+    }
+
+    refreshAiProvider();
+
     // ── Updates ───────────────────────────────────────────────────────
 
     const updatesSection = document.getElementById('updatesSection');

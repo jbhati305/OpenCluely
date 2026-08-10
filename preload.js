@@ -80,6 +80,44 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openPermissionSettings: (permission) =>
     ipcRenderer.invoke('permissions:open-settings', permission),
 
+  // Speech diagnostics — why the microphone is or is not usable.
+  // Sanitized enums only: no keys, no audio, no transcription text.
+  getSpeechDiagnostics: () => ipcRenderer.invoke('speech:get-diagnostics'),
+  resolveSpeechAction: (action) => ipcRenderer.invoke('speech:resolve-action', action),
+  onSpeechDiagnostics: (callback) => {
+    const wrapped = (_event, state) => {
+      try { callback(state); } catch (e) { console.error('onSpeechDiagnostics error:', e); }
+    };
+    ipcRenderer.on('speech-diagnostics', wrapped);
+    return () => ipcRenderer.removeListener('speech-diagnostics', wrapped);
+  },
+
+  // Guided interview pacing (System Design / LLD)
+  getInterviewState: () => ipcRenderer.invoke('interview:get-state'),
+  runInterviewAction: (actionId) => ipcRenderer.invoke('interview:action', actionId),
+  onInterviewState: (callback) => {
+    const wrapped = (_event, state) => {
+      try { callback(state); } catch (e) { console.error('onInterviewState error:', e); }
+    };
+    ipcRenderer.on('interview-state', wrapped);
+    return () => ipcRenderer.removeListener('interview-state', wrapped);
+  },
+
+  // AI provider (Claude Agent is experimental and local-only).
+  // These return sanitized objects only — never tokens, credential paths,
+  // environment contents, account ids or email addresses.
+  getAiProviderState: () => ipcRenderer.invoke('ai-provider:get-state'),
+  setAiProvider: (providerId) => ipcRenderer.invoke('ai-provider:set', providerId),
+  testAiProvider: () => ipcRenderer.invoke('ai-provider:test'),
+  setAiProviderEnabled: (enabled) => ipcRenderer.invoke('ai-provider:set-enabled', enabled),
+
+  // Claude CLI executable. The renderer sends a candidate string and receives
+  // a validation verdict; it never reads the filesystem or runs a command.
+  validateClaudeExecutable: (candidate) => ipcRenderer.invoke('claude:validate-executable', candidate),
+  autoDetectClaudeExecutable: () => ipcRenderer.invoke('claude:auto-detect-executable'),
+  browseClaudeExecutable: () => ipcRenderer.invoke('claude:browse-executable'),
+  setClaudeExecutable: (candidate) => ipcRenderer.invoke('claude:set-executable', candidate),
+
   // Updates
   getUpdateState: () => ipcRenderer.invoke('updates:get-state'),
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),

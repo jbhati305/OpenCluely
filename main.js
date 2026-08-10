@@ -135,6 +135,14 @@ const {
   resolveLockCursorShapeUpdate,
   LOCK_CURSOR_SHAPE_ENV_KEY,
 } = require("./src/core/cursor-policy");
+const {
+  AI_PROVIDERS,
+  PROVIDER_ENV_KEY,
+  resolveProvider,
+  selectableProviders,
+  isValidProviderValue,
+  isClaudeExperimentEnabled,
+} = require("./src/services/llm-providers/selection");
 
 class ApplicationController {
   constructor() {
@@ -197,6 +205,10 @@ class ApplicationController {
       logger,
       platform: process.platform,
     });
+
+    // Abort any in-flight Claude query on quit so the SDK subprocess never
+    // outlives the app.
+    this.lifecycle.registerDisposer("claude-provider", () => llmService.shutdown());
 
     this.permissions = new MacPermissionsService({
       systemPreferences,
@@ -634,6 +646,7 @@ class ApplicationController {
       BrowserWindow.getAllWindows().forEach((window) => {
         window.webContents.send("speech-availability", { available: this.speechAvailable });
       });
+      this.broadcastSpeechDiagnostics();
     });
 
     speechService.on("error", (error) => {
@@ -713,6 +726,7 @@ class ApplicationController {
           win.webContents.send("speech-availability", { available: this.speechAvailable });
         }
       });
+      this.broadcastSpeechDiagnostics();
     });
 
     ipcMain.on("test-chat-window", () => {
@@ -791,10 +805,47 @@ class ApplicationController {
       return sessionManager.getOptimizedHistory();
     });
 
-    ipcMain.handle("clear-session-memory", () => {
-      sessionManager.clear();
-      windowManager.broadcastToAllWindows("session-cleared");
-      return { success: true };
+    ipcMain.handle("clear-session-memory", async () => {
+      return this.clearConversationState("chat-bin");
+    });
+
+    // ── Guided interview state and compact chat actions ──
+    ipcMain.handle("interview:get-state", () => this.getInterviewState());
+
+    ipcMain.handle("interview:action", async (event, actionId) => {
+      const responsePolicy = require("./src/core/response-policy");
+      const valid = Object.values(responsePolicy.ACTIONS);
+      if (!valid.includes(actionId)) {
+        return { success: false, error: "Unknown action" };
+      }
+
+      // Only `Next step` moves the interview forward. A normal question answers
+      // the current stage and stays put, which is what makes the pacing
+      // predictable instead of the model deciding when to jump ahead.
+      if (actionId === responsePolicy.ACTIONS.NEXT_STEP) {
+        sessionManager.advanceInterviewStage(this.activeSkill);
+      }
+
+      const prompts = {
+        [responsePolicy.ACTIONS.NEXT_STEP]: "Continue to the next step.",
+        [responsePolicy.ACTIONS.ASSUMPTIONS]:
+          "I do not have answers to those questions. Proceed with reasonable assumptions.",
+        [responsePolicy.ACTIONS.DEEP_DIVE]: "Go deeper on what you just covered.",
+        [responsePolicy.ACTIONS.FULL_ANSWER]: "Give me the full answer now."
+      };
+
+      this.broadcastInterviewState();
+
+      (async () => {
+        try {
+          const sessionHistory = sessionManager.getOptimizedHistory();
+          await this.processWithLLM(prompts[actionId], sessionHistory, actionId);
+        } catch (error) {
+          logger.error("Interview action failed", { actionId, error: error.message });
+        }
+      })();
+
+      return { success: true, ...this.getInterviewState() };
     });
 
     ipcMain.handle("force-always-on-top", () => {
@@ -952,6 +1003,7 @@ class ApplicationController {
             win.webContents.send("speech-availability", { available: this.speechAvailable });
           }
         });
+        this.broadcastSpeechDiagnostics();
         return { success: true };
       } catch (e) {
         return { success: false, error: e.message };
@@ -1041,6 +1093,8 @@ class ApplicationController {
     ipcMain.handle("update-active-skill", (event, skill) => {
       this.activeSkill = skill;
       windowManager.broadcastToAllWindows("skill-changed", { skill });
+      // The action bar depends on the skill's strategy, so it has to follow.
+      this.broadcastInterviewState();
       return { success: true };
     });
 
@@ -1114,6 +1168,177 @@ class ApplicationController {
     });
 
     // ── Updates ──
+    // ── Speech diagnostics ──
+    // The microphone control stays visible even when speech is unusable, so
+    // it needs a reason to display and an action to offer.
+    ipcMain.handle("speech:get-diagnostics", () => this.getSpeechDiagnostics());
+
+    ipcMain.handle("speech:resolve-action", async (event, action) => {
+      const { ACTIONS } = require("./src/services/speech-diagnostics");
+      switch (action) {
+        case ACTIONS.OPEN_PERMISSIONS:
+          await this.permissions.openSettings("microphone");
+          return { success: true };
+        case ACTIONS.OPEN_SPEECH_SETTINGS:
+        case ACTIONS.INSTALL_WHISPER:
+        case ACTIONS.DOWNLOAD_MODEL:
+          windowManager.showWindow("settings");
+          windowManager.broadcastToAllWindows("focus-settings-section", { section: "speech" });
+          return { success: true };
+        default:
+          return { success: false };
+      }
+    });
+
+    // ── AI provider (Claude Agent is experimental and local-only) ──
+    // Every response here is already sanitized by the provider: the renderer
+    // never receives raw auth output, tokens, credential paths, environment
+    // contents, account ids or email addresses.
+    ipcMain.handle("ai-provider:get-state", async () => {
+      const resolved = resolveProvider();
+      const state = {
+        active: resolved.provider,
+        requested: resolved.requested,
+        gated: resolved.gated,
+        experimentEnabled: isClaudeExperimentEnabled(),
+        available: selectableProviders(),
+        claude: null,
+        executable: this.describeClaudeExecutable(),
+      };
+
+      if (state.experimentEnabled) {
+        try {
+          await this.applyStoredClaudeExecutable();
+          state.claude = await llmService.ensureClaudeReady().then((p) => p.getStatus());
+        } catch (error) {
+          state.claude = { available: false, errorCode: error.code || "CLAUDE_PROVIDER_FAILED" };
+        }
+      }
+      return state;
+    });
+
+    ipcMain.handle("ai-provider:set", (event, providerId) => {
+      if (!isValidProviderValue(providerId)) {
+        return { success: false, error: "Unknown provider" };
+      }
+      // The gate is enforced here too, not only in the UI: a hand-edited .env
+      // must not be able to activate the experiment.
+      if (providerId === AI_PROVIDERS.CLAUDE_AGENT && !isClaudeExperimentEnabled()) {
+        return { success: false, error: "This provider is not enabled on this machine." };
+      }
+
+      const previous = process.env[PROVIDER_ENV_KEY];
+      try {
+        this.persistEnvUpdates({ [PROVIDER_ENV_KEY]: providerId });
+        return { success: true, active: resolveProvider().provider };
+      } catch (error) {
+        // Keep the previously working provider selected on failure.
+        if (previous === undefined) delete process.env[PROVIDER_ENV_KEY];
+        else process.env[PROVIDER_ENV_KEY] = previous;
+        logger.warn("Failed to persist AI provider", { error: error.message });
+        return { success: false, error: "Could not save the provider setting." };
+      }
+    });
+
+    // Local opt-in, stored in the userData-backed .env so the installed DMG
+    // works from Finder without exporting a shell variable.
+    ipcMain.handle("ai-provider:set-enabled", async (event, enabled) => {
+      if (typeof enabled !== "boolean") return { success: false, error: "Expected a boolean" };
+      try {
+        this.persistEnvUpdates({ [EXPERIMENTAL_GATE_KEY]: enabled ? "true" : "false" });
+        if (!enabled) {
+          // Turning it off must not leave a Claude subprocess running.
+          await llmService.clearClaudeConversation("integration-disabled");
+          this.persistEnvUpdates({ [PROVIDER_ENV_KEY]: AI_PROVIDERS.GEMINI });
+        }
+        return { success: true, experimentEnabled: isClaudeExperimentEnabled() };
+      } catch (error) {
+        logger.warn("Failed to persist Claude opt-in", { error: error.message });
+        return { success: false, error: "Could not save the setting." };
+      }
+    });
+
+    // ── Claude CLI executable ──
+    ipcMain.handle("claude:validate-executable", (event, candidate) => {
+      const { validateExecutablePath } = require("./src/services/claude-agent/executable");
+      const result = validateExecutablePath(candidate);
+      // Only the enum, the message and the resolved path leave the main process.
+      return { valid: result.valid, code: result.code, message: result.message, resolvedPath: result.resolvedPath };
+    });
+
+    ipcMain.handle("claude:auto-detect-executable", () => {
+      const { autoDetectExecutable, bundledExecutablePath } = require("./src/services/claude-agent/executable");
+      const found = autoDetectExecutable({
+        savedPath: process.env.CLAUDE_EXECUTABLE_PATH || null,
+        bundledPath: bundledExecutablePath()
+      });
+      return found ? { found: true, ...found } : { found: false };
+    });
+
+    ipcMain.handle("claude:browse-executable", async () => {
+      // The picker runs in the main process; renderer code never touches the
+      // filesystem directly.
+      const { dialog } = require("electron");
+      const parent = windowManager.getWindow("settings");
+      const result = await dialog.showOpenDialog(parent || undefined, {
+        title: "Select the Claude CLI",
+        properties: ["openFile", "dontAddToRecent"],
+        message: "Choose the claude executable"
+      });
+      if (result.canceled || !result.filePaths.length) return { canceled: true };
+
+      const { validateExecutablePath } = require("./src/services/claude-agent/executable");
+      const validation = validateExecutablePath(result.filePaths[0]);
+      return {
+        canceled: false,
+        path: result.filePaths[0],
+        valid: validation.valid,
+        code: validation.code,
+        message: validation.message
+      };
+    });
+
+    ipcMain.handle("claude:set-executable", async (event, candidate) => {
+      const { validateExecutablePath, probeExecutable } = require("./src/services/claude-agent/executable");
+
+      // An empty value clears the override and returns to auto-detection.
+      if (!candidate) {
+        this.persistEnvUpdates({ CLAUDE_EXECUTABLE_PATH: "" });
+        const provider = llmService.getClaudeProvider();
+        await provider.setExecutable({ path: null, source: "bundled" });
+        return { success: true, cleared: true };
+      }
+
+      const validation = validateExecutablePath(candidate);
+      if (!validation.valid) {
+        return { success: false, code: validation.code, message: validation.message };
+      }
+
+      const probe = await probeExecutable(validation.resolvedPath);
+      if (!probe.ok) {
+        return { success: false, code: probe.code, message: "That file did not respond to `claude --version`." };
+      }
+
+      this.persistEnvUpdates({ CLAUDE_EXECUTABLE_PATH: validation.resolvedPath });
+
+      // A different binary can mean a different account state, so the
+      // conversation is torn down and the provider re-initialized.
+      const provider = llmService.getClaudeProvider();
+      await provider.setExecutable({ path: validation.resolvedPath, source: "configured" });
+      const status = await provider.initialize();
+
+      return { success: true, resolvedPath: validation.resolvedPath, version: probe.version, status };
+    });
+
+    ipcMain.handle("ai-provider:test", async () => {
+      try {
+        const result = await llmService.testConnection();
+        return { success: Boolean(result && result.success), ...result };
+      } catch (error) {
+        return { success: false, errorCode: error.code || "CLAUDE_PROVIDER_FAILED" };
+      }
+    });
+
     ipcMain.handle("updates:get-state", () => this.updater.getState());
 
     ipcMain.handle("updates:check", async () => {
@@ -1152,14 +1377,204 @@ class ApplicationController {
     }
   }
 
+  /**
+   * What the chat action bar should show right now. Skill-driven, so DSA gets
+   * no actions at all and never needs `Next step` to produce a full answer.
+   */
+  /**
+   * One shared availability model for the overlay and the chat window.
+   *
+   * Filesystem checks are deliberately cheap (existence only) so this can be
+   * called on every broadcast without probing the Whisper CLI.
+   */
+  /**
+   * Which Claude executable is in play, as a sanitized summary.
+   *
+   * Three distinct things are deliberately kept separate here:
+   *   - the CLI OpenCluely runs to read subscription auth,
+   *   - the executable the Agent SDK launches internally,
+   *   - the copy bundled with the pinned SDK.
+   * When a validated user-selected path exists it is used for both, which is
+   * what makes a Finder launch work; otherwise the SDK falls back to its own
+   * bundled binary.
+   */
+  describeClaudeExecutable() {
+    const { validateExecutablePath, bundledExecutablePath, SOURCES } =
+      require("./src/services/claude-agent/executable");
+
+    const configured = process.env.CLAUDE_EXECUTABLE_PATH || null;
+    const bundled = bundledExecutablePath();
+
+    if (configured) {
+      const validation = validateExecutablePath(configured);
+      return {
+        source: SOURCES.CONFIGURED,
+        path: configured,
+        valid: validation.valid,
+        code: validation.code,
+        message: validation.message,
+        bundledAvailable: Boolean(bundled),
+      };
+    }
+
+    return {
+      source: bundled ? SOURCES.BUNDLED : SOURCES.NONE,
+      path: null,
+      valid: Boolean(bundled),
+      code: bundled ? "ok" : "not-found",
+      message: bundled
+        ? "Using the Claude executable bundled with the Agent SDK."
+        : "No Claude CLI found. Use Auto-detect or Browse to choose one.",
+      bundledAvailable: Boolean(bundled),
+    };
+  }
+
+  /** Push a saved executable path into the provider once per change. */
+  async applyStoredClaudeExecutable() {
+    const configured = process.env.CLAUDE_EXECUTABLE_PATH || null;
+    if (configured === this._appliedClaudeExecutable) return;
+
+    const { validateExecutablePath } = require("./src/services/claude-agent/executable");
+    const provider = llmService.getClaudeProvider();
+
+    if (!configured) {
+      await provider.setExecutable({ path: null, source: "bundled" });
+      this._appliedClaudeExecutable = null;
+      return;
+    }
+
+    const validation = validateExecutablePath(configured);
+    if (!validation.valid) {
+      logger.warn("Saved Claude executable is no longer valid", { code: validation.code });
+      await provider.setExecutable({ path: null, source: "bundled" });
+      this._appliedClaudeExecutable = null;
+      return;
+    }
+
+    await provider.setExecutable({ path: validation.resolvedPath, source: "configured" });
+    this._appliedClaudeExecutable = configured;
+  }
+
+  getSpeechDiagnostics() {
+    const { buildDiagnostics } = require("./src/services/speech-diagnostics");
+    const fs = require("fs");
+
+    let whisperInstalled;
+    let modelAvailable;
+
+    const provider = speechService.provider || "disabled";
+
+    if (provider === "whisper") {
+      try {
+        const installer = this.getWhisperInstaller();
+        // A configured external command counts as installed even when the
+        // managed venv is absent.
+        whisperInstalled =
+          Boolean(process.env.WHISPER_COMMAND) || fs.existsSync(installer.venvPath);
+
+        const model = process.env.WHISPER_MODEL || "small";
+        modelAvailable = fs.existsSync(installer._getModelPath(model));
+      } catch (error) {
+        logger.debug("Whisper diagnostics probe failed", { error: error.message });
+        whisperInstalled = undefined;
+        modelAvailable = undefined;
+      }
+    }
+
+    let microphonePermission = "unknown";
+    try {
+      const statuses = this.permissions.getAllStatuses();
+      if (statuses && statuses.microphone) microphonePermission = statuses.microphone.status;
+    } catch (error) {
+      logger.debug("Microphone permission probe failed", { error: error.message });
+    }
+
+    return buildDiagnostics({
+      provider,
+      available: speechService.isAvailable ? speechService.isAvailable() : false,
+      recording: Boolean(speechService.isRecording),
+      processing: Boolean(speechService.isProcessing),
+      microphonePermission,
+      whisperInstalled,
+      modelAvailable
+    });
+  }
+
+  broadcastSpeechDiagnostics() {
+    try {
+      windowManager.broadcastToAllWindows("speech-diagnostics", this.getSpeechDiagnostics());
+    } catch (error) {
+      logger.debug("Could not broadcast speech diagnostics", { error: error.message });
+    }
+  }
+
+  getInterviewState() {
+    const responsePolicy = require("./src/core/response-policy");
+    const skill = this.activeSkill;
+    const stage = sessionManager.getInterviewStage
+      ? sessionManager.getInterviewStage(skill)
+      : null;
+
+    return {
+      skill,
+      strategy: responsePolicy.getStrategy(skill),
+      guided: responsePolicy.isGuided(skill),
+      stage,
+      stageLabel: stage ? responsePolicy.stageLabel(stage) : null,
+      stageIndex: stage ? responsePolicy.getStages(skill).indexOf(stage) + 1 : 0,
+      stageCount: responsePolicy.getStages(skill).length,
+      actions: responsePolicy.availableActions({ skill, stage })
+    };
+  }
+
+  broadcastInterviewState() {
+    try {
+      windowManager.broadcastToAllWindows("interview-state", this.getInterviewState());
+    } catch (error) {
+      logger.debug("Could not broadcast interview state", { error: error.message });
+    }
+  }
+
   clearSessionMemory() {
+    // Global shortcut. Routes through the same single clearing function as the
+    // chat bin so the two paths can never drift apart again.
+    this.clearConversationState("global-shortcut").catch((error) =>
+      logger.error("Error clearing session memory:", error)
+    );
+  }
+
+  /**
+   * The one way to clear a conversation. Idempotent.
+   *
+   * Both the chat bin and the clear-session shortcut call this. It cancels the
+   * active model turn, destroys the Claude conversation (so the next request
+   * starts genuinely fresh rather than resuming), clears OpenCluely history and
+   * guided-interview stage state, and broadcasts the reset. The generation
+   * counter inside ClaudeConversation is what stops a mid-flight streaming
+   * answer from reappearing in the UI afterwards.
+   */
+  async clearConversationState(reason = "cleared") {
+    let claudeReset = false;
+
+    try {
+      // Order matters: kill the model turn before clearing UI state, so no
+      // late delta can repopulate a window we are about to blank.
+      const result = await llmService.clearClaudeConversation(reason);
+      claudeReset = Boolean(result && result.reset);
+    } catch (error) {
+      logger.warn("Failed to reset Claude conversation", { reason, error: error.message });
+    }
+
     try {
       sessionManager.clear();
-      windowManager.broadcastToAllWindows("session-cleared");
-      logger.info("Session memory cleared via global shortcut");
     } catch (error) {
-      logger.error("Error clearing session memory:", error);
+      logger.error("Failed to clear session memory", { error: error.message });
     }
+
+    windowManager.broadcastToAllWindows("session-cleared", { reason, claudeReset });
+    logger.info("Conversation state cleared", { reason, claudeReset });
+
+    return { success: true, reason, claudeReset };
   }
 
   handleUpArrow() {
@@ -1328,7 +1743,7 @@ class ApplicationController {
     });
   }
 
-  async processWithLLM(text, sessionHistory) {
+  async processWithLLM(text, sessionHistory, action = null) {
     try {
       // Add user input to session memory
       sessionManager.addUserInput(text, 'llm_input');
@@ -1355,9 +1770,20 @@ class ApplicationController {
             messageId,
             delta
           });
-        }
+        },
+        { action }
       );
       llmResult.metadata = { ...llmResult.metadata, messageId };
+
+      // Record that this stage has now been answered, so the next guided turn
+      // is no longer treated as the opening one.
+      if (sessionManager.getInterviewStage && sessionManager.getInterviewStage(this.activeSkill)) {
+        sessionManager.setInterviewStage(
+          this.activeSkill,
+          sessionManager.getInterviewStage(this.activeSkill)
+        );
+      }
+      this.broadcastInterviewState();
 
       logger.info("LLM processing completed, showing response", {
         responseLength: llmResult.response.length,
@@ -2011,6 +2437,7 @@ class ApplicationController {
               win.webContents.send("speech-availability", { available: this.speechAvailable });
             }
           });
+          this.broadcastSpeechDiagnostics();
           logger.info('Speech service reinitialized after settings change', {
             providerChanged,
             whisperCommandChanged,

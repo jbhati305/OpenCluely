@@ -1,0 +1,6 @@
+{
+  "name": "opencluely-system-audio-probe",
+  "version": "1.0.0",
+  "main": "main.js",
+  "private": true
+}

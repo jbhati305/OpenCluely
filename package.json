@@ -8,10 +8,12 @@
     "dev": "env -u ELECTRON_RUN_AS_NODE electron . --no-sandbox --disable-gpu",
     "test-speech": "node scripts/test-speech.js",
     "test": "node --test \"test/**/*.test.js\"",
+    "spike:claude-subscription": "node scripts/claude-agent-sdk-smoke.mjs",
     "verify:electron": "node scripts/verify-electron.js",
     "build": "electron-builder",
     "build:mac": "node scripts/build-mac.js",
     "build:mac:arm64": "node scripts/build-mac.js",
+    "build:mac:local-claude": "node scripts/build-mac-local-claude.js",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux",
     "build:all": "electron-builder --mac --win --linux",
@@ -39,6 +41,7 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.226",
     "@fortawesome/fontawesome-free": "^7.2.0",
     "@google/genai": "^2.9.0",
     "dotenv": "^16.3.1",
@@ -74,13 +77,17 @@
       "!.whisper-models/**/*",
       "!bin/**/*",
       "!scripts/__pycache__/**/*",
+      "!scripts/claude-agent-sdk-smoke.mjs",
+      "!scripts/claude-multiturn-probe.mjs",
+      "!scripts/system-audio-probe/**/*",
       "!**/*.pyc",
       "!eng.traineddata"
     ],
     "asarUnpack": [
       "assests/icons/**/*",
       "prompts/**/*",
-      "scripts/whisper_worker.py"
+      "scripts/whisper_worker.py",
+      "node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude"
     ],
     "mac": {
       "category": "public.app-category.utilities",

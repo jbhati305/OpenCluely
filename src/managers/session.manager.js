@@ -1,6 +1,7 @@
 const logger = require('../core/logger').createServiceLogger('SESSION');
 const config = require('../core/config');
 const { promptLoader } = require('../../prompt-loader');
+const responsePolicy = require('../core/response-policy');
 
 class SessionManager {
   constructor() {
@@ -10,8 +11,44 @@ class SessionManager {
     this.compressionThreshold = config.get('session.compressionThreshold');
     this.currentSkill = 'dsa'; // Default skill is DSA
     this.isInitialized = false;
-    
+
+    // Guided-interview position, tracked per skill. Held here rather than
+    // inferred by the model so `Next step` advances exactly one stage.
+    this.interviewStages = {};
+
     this.initializeWithSkillPrompts();
+  }
+
+  // ── Guided-interview stage state ──────────────────────────────────
+
+  /** The stage this skill is on, defaulting to its first stage. */
+  getInterviewStage(skill = this.currentSkill) {
+    if (!responsePolicy.isGuided(skill)) return null;
+    return this.interviewStages[skill] || responsePolicy.firstStage(skill);
+  }
+
+  setInterviewStage(skill, stage) {
+    if (!responsePolicy.isGuided(skill)) return null;
+    if (!responsePolicy.getStages(skill).includes(stage)) return this.getInterviewStage(skill);
+    this.interviewStages[skill] = stage;
+    return stage;
+  }
+
+  /** Advance exactly one stage and return the new one. */
+  advanceInterviewStage(skill = this.currentSkill) {
+    if (!responsePolicy.isGuided(skill)) return null;
+    const next = responsePolicy.nextStage(skill, this.getInterviewStage(skill));
+    this.interviewStages[skill] = next;
+    return next;
+  }
+
+  /** True until the first answer of a guided interview has been given. */
+  isFirstTurn(skill = this.currentSkill) {
+    return responsePolicy.isGuided(skill) && !this.interviewStages[skill];
+  }
+
+  resetInterviewStages() {
+    this.interviewStages = {};
   }
 
   /**
@@ -580,7 +617,10 @@ class SessionManager {
     const eventCount = this.sessionMemory.length;
     this.sessionMemory = [];
     this.isInitialized = false;
-    
+
+    // A cleared chat must start the interview over, not resume at stage 6.
+    this.resetInterviewStages();
+
     logger.info('Session memory cleared', { eventCount });
     
     // Reinitialize with skill prompts

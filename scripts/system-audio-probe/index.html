@@ -1,0 +1,84 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>System audio probe</title>
+<style>
+  body { font: 13px -apple-system, sans-serif; padding: 20px; background: #111; color: #eee; }
+  #log { white-space: pre-wrap; margin-top: 12px; color: #9ad; }
+</style>
+<h3>macOS system-audio probe</h3>
+<p>Play some audio (music, a video) for a few seconds.</p>
+<div id="log">requesting…</div>
+<script>
+  const log = (m) => { document.getElementById('log').textContent = m; };
+
+  (async () => {
+    let stream = null;
+    try {
+      // Video is required for the desktop-capture request; only audio matters.
+      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    } catch (error) {
+      window.probe.report({ error: `getDisplayMedia rejected: ${error.name}` });
+      return;
+    }
+
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      stream.getTracks().forEach((t) => t.stop());
+      window.probe.report({ error: 'no audio track returned (video only)' });
+      return;
+    }
+
+    const track = audioTracks[0];
+    const t0 = Date.now();
+    const initialReadyState = track.readyState;
+    let endedAtMs = null;
+    track.addEventListener('ended', () => { endedAtMs = Date.now() - t0; });
+
+    const context = new AudioContext();
+    const source = context.createMediaStreamSource(new MediaStream([track]));
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 2048;
+    source.connect(analyser);
+    // Deliberately NOT connected to the destination: routing system audio back
+    // to the speakers would create a capture feedback loop.
+
+    const buffer = new Float32Array(analyser.fftSize);
+    let peak = 0;
+    let samples = 0;
+
+    log('capturing for 8 seconds — please play some audio…');
+
+    const timer = setInterval(() => {
+      analyser.getFloatTimeDomainData(buffer);
+      for (let i = 0; i < buffer.length; i += 1) {
+        const v = Math.abs(buffer[i]);
+        if (v > peak) peak = v;
+      }
+      samples += 1;
+      log(`capturing… peak ${peak.toFixed(4)} (${samples} buffers)`);
+    }, 100);
+
+    setTimeout(async () => {
+      clearInterval(timer);
+      const trackReadyState = track.readyState;
+      const trackLabel = track.label;
+
+      stream.getTracks().forEach((t) => t.stop());
+      await context.close();
+
+      window.probe.report({
+        hasAudioTrack: true,
+        initialReadyState,
+        endedAtMs,
+        videoTracks: stream.getVideoTracks().length,
+        trackLabel,
+        trackReadyState,
+        sawSignal: peak > 0.0005,
+        peak,
+        samples,
+        stoppedCleanly: track.readyState === 'ended',
+        finalReadyState: track.readyState
+      });
+    }, 8000);
+  })();
+</script>

@@ -465,6 +465,63 @@
         font-size: 0.72em;
         line-height: 0;
       }
+      /* Interview action bar: sits above the composer, disappears entirely
+         when there are no relevant actions so it never eats chat space. */
+      .interview-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        padding: 8px 20px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+        background: rgba(0, 0, 0, 0.15);
+        flex-shrink: 0;
+        -webkit-app-region: no-drag;
+      }
+      .interview-actions[hidden] {
+        display: none;
+      }
+      .interview-stage {
+        font-size: 11px;
+        letter-spacing: 0.02em;
+        color: rgba(255, 255, 255, 0.5);
+        white-space: nowrap;
+      }
+      .interview-action-buttons {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .interview-action {
+        font: inherit;
+        font-size: 11px;
+        line-height: 1;
+        padding: 5px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.82);
+        cursor: pointer;
+        transition: background 0.15s ease, border-color 0.15s ease;
+      }
+      .interview-action:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.12);
+        border-color: rgba(255, 255, 255, 0.24);
+      }
+      .interview-action:focus-visible {
+        outline: 2px solid rgba(120, 170, 255, 0.8);
+        outline-offset: 2px;
+      }
+      .interview-action:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .interview-action.is-primary {
+        background: rgba(120, 170, 255, 0.18);
+        border-color: rgba(120, 170, 255, 0.45);
+        color: #dce9ff;
+      }
+
       .chat-input {
         padding: 16px 20px;
         border-top: 1px solid rgba(255, 255, 255, 0.08);
@@ -546,6 +603,26 @@
       .mic-button:hover {
         background: rgba(255, 255, 255, 0.25);
         color: rgba(255, 255, 255, 1);
+      }
+      /* Unavailable, not absent: dimmed and marked, but still clickable so it
+         can explain itself and open the relevant settings. */
+      .mic-button.is-unavailable {
+        opacity: 0.45;
+        position: relative;
+      }
+      .mic-button.is-unavailable::after {
+        content: "!";
+        position: absolute;
+        top: -2px;
+        right: 0;
+        font-size: 9px;
+        font-weight: 700;
+        line-height: 1;
+        color: #ffcf70;
+      }
+      .mic-button:focus-visible {
+        outline: 2px solid rgba(120, 170, 255, 0.85);
+        outline-offset: 2px;
       }
       .mic-button.recording {
         background: rgba(255, 71, 87, 0.8);
@@ -747,6 +824,17 @@
 
       <div class="chat-messages" id="chatMessages"></div>
 
+      <!--
+        Compact interview actions. Only rendered for skills whose strategy
+        needs them (guided/concise); DSA answers completely by default and
+        gets no bar at all. Collapses to zero height when empty so it never
+        obstructs the chat.
+      -->
+      <div class="interview-actions" id="interviewActions" hidden>
+        <span class="interview-stage" id="interviewStage"></span>
+        <div class="interview-action-buttons" id="interviewActionButtons"></div>
+      </div>
+
       <div class="chat-input">
         <div class="input-container">
           <textarea
@@ -854,30 +942,85 @@
         if (chatMessages) chatMessages.innerHTML = '';
       }
 
+      // The microphone control is ALWAYS in the layout. Hiding it when speech
+      // was unavailable left users with no microphone and no explanation —
+      // the button now stays put and carries the reason instead.
+      let speechDiagnostics = null;
+
       function applyMicVisibility() {
-        if (micButton) {
-          micButton.style.display = speechAvailable ? '' : 'none';
-        }
+        if (!micButton) return;
+
+        micButton.style.display = '';
+        micButton.disabled = false;
+
+        const usable = speechDiagnostics ? speechDiagnostics.available : speechAvailable;
+        const message = speechDiagnostics && speechDiagnostics.message
+          ? speechDiagnostics.message
+          : (usable ? 'Ready' : 'Speech is unavailable. Click for setup.');
+
+        micButton.classList.toggle('is-unavailable', !usable);
+        micButton.setAttribute('title', message);
+        micButton.setAttribute('aria-label', message);
+        micButton.setAttribute('aria-disabled', String(!usable));
       }
-      
+
+      function applySpeechDiagnostics(state) {
+        if (!state) return;
+        speechDiagnostics = state;
+        speechAvailable = !!state.available;
+        applyMicVisibility();
+      }
+
       async function initSpeechAvailability() {
         try {
+          if (window.electronAPI && window.electronAPI.getSpeechDiagnostics) {
+            applySpeechDiagnostics(await window.electronAPI.getSpeechDiagnostics());
+            return;
+          }
           if (window.electronAPI && window.electronAPI.getSpeechAvailability) {
             speechAvailable = await window.electronAPI.getSpeechAvailability();
-            applyMicVisibility();
           }
         } catch (e) {
           speechAvailable = false;
-          applyMicVisibility();
         }
+        applyMicVisibility();
       }
-      
+
       // Listen for availability changes
       if (whysperAPI && whysperAPI.onSpeechAvailability) {
         whysperAPI.onSpeechAvailability((event, data) => {
           speechAvailable = !!(data && data.available);
           applyMicVisibility();
         });
+      }
+
+      if (window.electronAPI && window.electronAPI.onSpeechDiagnostics) {
+        window.electronAPI.onSpeechDiagnostics(applySpeechDiagnostics);
+      }
+
+      /**
+       * Explain why speech is unavailable and offer the fix. Returns true when
+       * it handled the click, so the caller must not fall through to recording.
+       * The control must never silently do nothing.
+       */
+      async function handleUnavailableSpeech() {
+        const usable = speechDiagnostics ? speechDiagnostics.available : speechAvailable;
+        if (usable) return false;
+
+        const message = speechDiagnostics && speechDiagnostics.message
+          ? speechDiagnostics.message
+          : 'Speech is not set up yet. Open Settings to configure it.';
+        addMessage(message, 'error');
+
+        try {
+          const action = speechDiagnostics && speechDiagnostics.suggestedAction;
+          if (action && action !== 'none' && window.electronAPI && window.electronAPI.resolveSpeechAction) {
+            await window.electronAPI.resolveSpeechAction(action);
+          }
+        } catch (e) {
+          console.warn('Could not open speech remediation', e);
+        }
+        return true;
       }
       
       // Also capture generic LLM responses (from OCR/screenshot flows)
@@ -1275,10 +1418,7 @@
             addMessage('Window is in non-interactive mode. Press Alt+A to enable interaction.', 'error');
             return;
           }
-          if (!speechAvailable) {
-            addMessage('Speech recognition is not configured.', 'system');
-            return;
-          }
+          if (await handleUnavailableSpeech()) return;
 
           try {
             if (isRecording) {
@@ -1356,11 +1496,69 @@
         });
       }
 
+      // ── Guided interview action bar ──────────────────────────────
+      // Rendered from the main process's response policy, so DSA (which
+      // answers completely in one turn) gets no bar at all.
+      const interviewActionsEl = document.getElementById('interviewActions');
+      const interviewStageEl = document.getElementById('interviewStage');
+      const interviewButtonsEl = document.getElementById('interviewActionButtons');
+
+      function renderInterviewState(state) {
+        if (!interviewActionsEl || !interviewButtonsEl) return;
+
+        const actions = (state && state.actions) || [];
+        if (actions.length === 0) {
+          interviewActionsEl.hidden = true;
+          interviewButtonsEl.innerHTML = '';
+          if (interviewStageEl) interviewStageEl.textContent = '';
+          return;
+        }
+
+        interviewActionsEl.hidden = false;
+
+        if (interviewStageEl) {
+          interviewStageEl.textContent = state.guided && state.stageLabel
+            ? `${state.stageLabel} · ${state.stageIndex}/${state.stageCount}`
+            : '';
+        }
+
+        interviewButtonsEl.innerHTML = '';
+        for (const action of actions) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'interview-action';
+          if (action.id === 'next-step') button.classList.add('is-primary');
+          button.textContent = action.label;
+          button.dataset.actionId = action.id;
+          button.addEventListener('click', async () => {
+            const buttons = interviewButtonsEl.querySelectorAll('button');
+            buttons.forEach((b) => { b.disabled = true; });
+            try {
+              await window.electronAPI.runInterviewAction(action.id);
+            } catch (err) {
+              console.error('Interview action failed', err);
+            } finally {
+              buttons.forEach((b) => { b.disabled = false; });
+            }
+          });
+          interviewButtonsEl.appendChild(button);
+        }
+      }
+
+      if (window.electronAPI && window.electronAPI.getInterviewState) {
+        window.electronAPI.getInterviewState().then(renderInterviewState).catch(() => {});
+      }
+      if (window.electronAPI && window.electronAPI.onInterviewState) {
+        window.electronAPI.onInterviewState(renderInterviewState);
+      }
+
       // Global keyboard shortcuts
       document.addEventListener('keydown', (e) => {
         if (e.altKey && e.key === 'r') {
           e.preventDefault();
-          if (!isInteractive || !speechAvailable) return;
+          if (!isInteractive) return;
+          // Deliberately still clicks when speech is unavailable: the button
+          // explains why and opens the fix rather than doing nothing.
           micButton && micButton.click();
         }
       });

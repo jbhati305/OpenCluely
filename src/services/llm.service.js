@@ -2,6 +2,7 @@ const { GoogleGenAI } = require('@google/genai');
 const logger = require('../core/logger').createServiceLogger('LLM');
 const config = require('../core/config');
 const { promptLoader } = require('../../prompt-loader');
+const { resolveProvider, AI_PROVIDERS } = require('./llm-providers/selection');
 
 class LLMService {
   constructor() {
@@ -10,8 +11,75 @@ class LLMService {
     this.isInitialized = false;
     this.requestCount = 0;
     this.errorCount = 0;
-    
+    this.claudeProvider = null;
+
     this.initializeClient();
+  }
+
+  // ---------------------------------------------------------------------
+  // Provider routing (experimental)
+  //
+  // Gemini stays the default and its behaviour is unchanged. The Claude
+  // provider is only reachable when AI_PROVIDER=claude-agent *and* the
+  // experimental gate is set, and it never silently falls back to Gemini —
+  // an unexpected fallback would send data to a provider the user did not
+  // choose, or bill a request they did not authorise.
+  // ---------------------------------------------------------------------
+
+  getActiveProvider() {
+    return resolveProvider().provider;
+  }
+
+  isClaudeActive() {
+    return this.getActiveProvider() === AI_PROVIDERS.CLAUDE_AGENT;
+  }
+
+  getClaudeProvider() {
+    if (!this.claudeProvider) {
+      const { ClaudeAgentProvider } = require('./llm-providers/claude-agent.provider');
+      this.claudeProvider = new ClaudeAgentProvider({ logger });
+    }
+    return this.claudeProvider;
+  }
+
+  async ensureClaudeReady() {
+    const provider = this.getClaudeProvider();
+    if (!provider.getStatus().initialized) await provider.initialize();
+    return provider;
+  }
+
+  /**
+   * Per-turn pacing for the active skill.
+   *
+   * Guided skills track their stage in SessionManager rather than asking the
+   * model to infer it, so `Next step` moves exactly one stage. `action` comes
+   * from the compact chat actions and can override the pacing entirely.
+   */
+  buildTurnContext(activeSkill, action = null) {
+    const responsePolicy = require('../core/response-policy');
+    const sessionManager = require('../managers/session.manager');
+
+    const strategy = responsePolicy.getStrategy(activeSkill);
+    const stage = responsePolicy.isGuided(activeSkill)
+      ? (sessionManager.getInterviewStage ? sessionManager.getInterviewStage(activeSkill) : null)
+      : null;
+
+    return {
+      strategy,
+      stage,
+      directive: responsePolicy.buildDirective({ skill: activeSkill, stage, action })
+    };
+  }
+
+  /** Ends the Claude conversation. Safe when Claude was never used. */
+  async clearClaudeConversation(reason = 'cleared') {
+    if (!this.claudeProvider) return { reset: false, reason };
+    return this.claudeProvider.clearConversation(reason);
+  }
+
+  /** Called on app quit so no Claude subprocess outlives the app. */
+  shutdown() {
+    if (this.claudeProvider) this.claudeProvider.shutdown();
   }
 
   initializeClient() {
@@ -225,7 +293,22 @@ class LLMService {
     }
   }
 
-  async processImageWithSkillStream(imageBuffer, mimeType, activeSkill, sessionMemory = [], programmingLanguage = null, onDelta = null) {
+  async processImageWithSkillStream(imageBuffer, mimeType, activeSkill, sessionMemory = [], programmingLanguage = null, onDelta = null, options = {}) {
+    if (this.isClaudeActive()) {
+      const provider = await this.ensureClaudeReady();
+      const turn = this.buildTurnContext(activeSkill, options.action);
+      return provider.processImageStream({
+        imageBuffer,
+        mimeType,
+        instruction: this.formatImageInstruction(activeSkill, programmingLanguage),
+        activeSkill,
+        sessionMemory,
+        programmingLanguage,
+        onDelta,
+        ...turn
+      });
+    }
+
     if (!this.isInitialized) {
       throw new Error('LLM service not initialized. Check Gemini API key configuration.');
     }
@@ -389,7 +472,20 @@ class LLMService {
     }
   }
 
-  async processTextWithSkillStream(text, activeSkill, sessionMemory = [], programmingLanguage = null, onDelta = null) {
+  async processTextWithSkillStream(text, activeSkill, sessionMemory = [], programmingLanguage = null, onDelta = null, options = {}) {
+    if (this.isClaudeActive()) {
+      const provider = await this.ensureClaudeReady();
+      const turn = this.buildTurnContext(activeSkill, options.action);
+      return provider.processTextStream({
+        text,
+        activeSkill,
+        sessionMemory,
+        programmingLanguage,
+        onDelta,
+        ...turn
+      });
+    }
+
     if (!this.isInitialized) {
       throw new Error('LLM service not initialized. Check Gemini API key configuration.');
     }
@@ -978,7 +1074,20 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
    * {response, metadata} shape. Falls back to the non-streaming path on any
    * streaming failure so reliability is never worse than before.
    */
-  async processTranscriptionWithIntelligentResponseStream(text, activeSkill, sessionMemory = [], programmingLanguage = null, onDelta = null) {
+  async processTranscriptionWithIntelligentResponseStream(text, activeSkill, sessionMemory = [], programmingLanguage = null, onDelta = null, options = {}) {
+    if (this.isClaudeActive()) {
+      const provider = await this.ensureClaudeReady();
+      const turn = this.buildTurnContext(activeSkill, options.action);
+      return provider.processTextStream({
+        text,
+        activeSkill,
+        sessionMemory,
+        programmingLanguage,
+        onDelta,
+        ...turn
+      });
+    }
+
     if (!this.isInitialized) {
       throw new Error('LLM service not initialized. Check Gemini API key configuration.');
     }
@@ -1404,6 +1513,11 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
   }
 
   async testConnection() {
+    if (this.isClaudeActive()) {
+      const provider = await this.ensureClaudeReady();
+      return provider.testConnection();
+    }
+
     if (!this.isInitialized) {
       return { success: false, error: 'Service not initialized' };
     }
@@ -1537,7 +1651,8 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
       requestCount: this.requestCount,
       errorCount: this.errorCount,
       successRate: this.requestCount > 0 ? ((this.requestCount - this.errorCount) / this.requestCount) * 100 : 0,
-      config: config.get('llm.gemini')
+      config: config.get('llm.gemini'),
+      provider: this.getActiveProvider()
     };
   }
 

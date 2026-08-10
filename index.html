@@ -41,6 +41,19 @@
   min-width: 60px;
       }
 
+      /* Speech unavailable: dimmed and flagged, but never removed from the
+         overlay — it stays clickable so it can explain and open setup. */
+      #micButton.is-unavailable {
+        opacity: 0.5;
+      }
+      #micButton.is-unavailable::after {
+        content: "!";
+        margin-left: 2px;
+        font-size: 9px;
+        font-weight: 700;
+        color: #ffcf70;
+      }
+
       .command-item {
         display: flex;
         align-items: center;

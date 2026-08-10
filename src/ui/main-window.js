@@ -16,6 +16,7 @@ class MainWindowUI {
         this.micButton = null;
         this.isRecording = false;
         this.speechAvailable = false; // track availability
+        this.speechDiagnostics = null; // shared availability model (see speech-diagnostics.js)
         this._popoverHideTimeout = null;
         // Renderer-side audio capture state (used for Whisper on Windows)
         this._audioContext = null;
@@ -119,26 +120,76 @@ class MainWindowUI {
 
     async loadSpeechAvailability() {
         try {
+            if (window.electronAPI && window.electronAPI.getSpeechDiagnostics) {
+                this.applySpeechDiagnostics(await window.electronAPI.getSpeechDiagnostics());
+                return;
+            }
             if (window.electronAPI && window.electronAPI.getSpeechAvailability) {
                 this.speechAvailable = await window.electronAPI.getSpeechAvailability();
-                this.applyMicVisibility();
             }
         } catch (e) {
             this.speechAvailable = false;
-            this.applyMicVisibility();
         }
+        this.applyMicVisibility();
     }
 
+    applySpeechDiagnostics(state) {
+        if (!state) return;
+        this.speechDiagnostics = state;
+        this.speechAvailable = !!state.available;
+        this.applyMicVisibility();
+    }
+
+    /**
+     * The microphone stays in the layout even when speech is unusable.
+     * Previously it was hidden, which left no way to discover that speech
+     * needed setup — or to reach the setup screen.
+     */
     applyMicVisibility() {
-        if (this.micButton) {
-            if (this.speechAvailable) {
-                this.micButton.style.display = '';
-            } else {
-                this.micButton.style.display = 'none';
+        if (!this.micButton) return;
+
+        this.micButton.style.display = '';
+
+        const diagnostics = this.speechDiagnostics;
+        const usable = diagnostics ? diagnostics.available : this.speechAvailable;
+        const message = diagnostics && diagnostics.message
+            ? diagnostics.message
+            : (usable ? 'Ready' : 'Speech is unavailable. Click for setup.');
+
+        this.micButton.classList.toggle('is-unavailable', !usable);
+        this.micButton.setAttribute('title', message);
+        this.micButton.setAttribute('aria-label', message);
+        this.micButton.setAttribute('aria-disabled', String(!usable));
+
+        // Resize to reflect any layout change
+        setTimeout(() => this.resizeWindowToContent(), 50);
+    }
+
+    /**
+     * Explain and remediate instead of doing nothing. Returns true when the
+     * click was handled and recording must not start.
+     */
+    async handleUnavailableSpeech() {
+        const diagnostics = this.speechDiagnostics;
+        const usable = diagnostics ? diagnostics.available : this.speechAvailable;
+        if (usable) return false;
+
+        const message = diagnostics && diagnostics.message
+            ? diagnostics.message
+            : 'Speech is not set up yet. Open Settings to configure it.';
+
+        if (typeof this.showToast === 'function') this.showToast(message);
+        else if (typeof this.updateStatus === 'function') this.updateStatus(message);
+
+        try {
+            const action = diagnostics && diagnostics.suggestedAction;
+            if (action && action !== 'none' && window.electronAPI && window.electronAPI.resolveSpeechAction) {
+                await window.electronAPI.resolveSpeechAction(action);
             }
-            // Resize to reflect layout change
-            setTimeout(() => this.resizeWindowToContent(), 50);
+        } catch (e) {
+            console.warn('Could not open speech remediation', e);
         }
+        return true;
     }
 
     updateAllElementStates() {
@@ -335,10 +386,11 @@ class MainWindowUI {
                     this.updateMicButtonState();
                 }
             } else if (this.isInteractive && !this.speechAvailable) {
-                logger.warn('Mic clicked but speech recognition is not available', {
-                    component: 'MainWindowUI'
-                });
-                this.loadSpeechAvailability();
+                // Refresh first in case setup completed since the last broadcast,
+                // then explain and open the fix. Never a silent no-op.
+                await this.loadSpeechAvailability();
+                if (this.speechAvailable) return;
+                await this.handleUnavailableSpeech();
             }
         });
 
@@ -451,6 +503,11 @@ class MainWindowUI {
                 this.applyMicVisibility();
             });
 
+            // Both windows share one availability model, so they stay in sync.
+            if (window.electronAPI.onSpeechDiagnostics) {
+                window.electronAPI.onSpeechDiagnostics((state) => this.applySpeechDiagnostics(state));
+            }
+
             // Listen for coding language changes from other windows
             window.electronAPI.onCodingLanguageChanged((event, data) => {
                 if (data && data.language && this.languageSelect) {
@@ -477,7 +534,12 @@ class MainWindowUI {
             document.addEventListener('keydown', (e) => {
                 if (e.altKey && e.key === 'r' && this.isInteractive) {
                     e.preventDefault();
-                    if (!this.speechAvailable) return; // guard when unavailable
+                    if (!this.speechAvailable) {
+                        // Surface the same explanation the button gives rather
+                        // than swallowing the shortcut.
+                        this.handleUnavailableSpeech();
+                        return;
+                    }
                     if (this.isRecording) {
                         window.electronAPI.stopSpeechRecognition();
                     } else {
